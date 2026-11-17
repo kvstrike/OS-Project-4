@@ -7,17 +7,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <time.h>
 
 #define PORT_NUM 8083
 
-#define RGB(r, g, b) "\033[38;2;" #r ";" #g ";" #b "m"
-#define RGBSET(r) \
-    ((r) % 6 == 1 ? RGB(255, 0, 0)   : \
-     (r) % 6 == 2 ? RGB(0, 0, 255)   : \
-     (r) % 6 == 3 ? RGB(128, 0, 128) : \
-     (r) % 6 == 4 ? RGB(0, 255, 0)   : \
-     (r) % 6 == 5 ? RGB(255, 255, 0) : \
-                    RGB(0, 255, 255))
 #define RESETRGB "\033[0m"
 
 void error(const char *msg)
@@ -40,8 +33,6 @@ typedef struct {
 
 Client clients[MAX_CLIENTS];
 int client_count = 0;
-
-int currColor = 1;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -104,15 +95,18 @@ void* thread_main(void* args) {
 
     clients[client_count].socket = clisockfd;
     strcpy(clients[client_count].name, name);
-	int threadColor = currColor++;
     client_count++;
 
     pthread_mutex_unlock(&clients_mutex);
 
+	char color[32];
+    snprintf(color, sizeof(color), "\033[38;2;%d;%d;%dm",
+        rand() % 256, rand() % 256, rand() % 256);
+
 	{
 	char message[516];
 
-    snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", RGBSET(threadColor), name, inet_ntoa(ip), RESETRGB);
+    snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
 
 	broadcast(message, clisockfd);
 	}
@@ -125,9 +119,9 @@ void* thread_main(void* args) {
 
         buffer[nrcv] = '\0';
 
-        char message[540];
+        char message[600];
 
-        snprintf(message, sizeof(message), "%s[%s(%s)]: %s%s", RGBSET(threadColor), name, inet_ntoa(ip), buffer, RESETRGB);
+        snprintf(message, sizeof(message), "%s[%s(%s)]: %s%s", color, name, inet_ntoa(ip), buffer, RESETRGB);
 
         broadcast(message, clisockfd);
     }
@@ -135,7 +129,7 @@ void* thread_main(void* args) {
 	{
 	char message[516];
 
-    snprintf(message, sizeof(message), "%s%s(%s) has left the chat.%s", RGBSET(threadColor), name, inet_ntoa(ip), RESETRGB);
+    snprintf(message, sizeof(message), "%s%s(%s) has left the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
 
 	broadcast(message, clisockfd);
 	}
@@ -149,6 +143,8 @@ void* thread_main(void* args) {
 
 int main(int argc, char *argv[])
 {
+	srand(time(NULL));
+
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (sockfd < 0) error("ERROR opening socket");
 
