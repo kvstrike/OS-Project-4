@@ -5,9 +5,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h> 
+#include <netdb.h>
 
-#define PORT_NUM 1004
+#define PORT_NUM 8083
 
 void error(const char *msg)
 {
@@ -29,12 +29,12 @@ int main(int argc, char *argv[])
 	socklen_t slen = sizeof(serv_addr);
 	memset((char*) &serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
-	memcpy((char*)server->h_addr, 
+	memcpy((char*)server->h_addr,
 			(char*)&serv_addr.sin_addr.s_addr,
 			server->h_length);
 	serv_addr.sin_port = htons(PORT_NUM);
 
-	int status = connect(sockfd, 
+	int status = connect(sockfd,
 			(struct sockaddr *) &serv_addr, slen);
 	if (status < 0) error("ERROR connecting");
 

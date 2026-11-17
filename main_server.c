@@ -2,13 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/types.h> 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 
-#define PORT_NUM 1004
+#define PORT_NUM 8083
 
 void error(const char *msg)
 {
@@ -60,10 +60,10 @@ int main(int argc, char *argv[])
 	socklen_t slen = sizeof(serv_addr);
 	memset((char*) &serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_addr.s_addr = INADDR_ANY;	
+	serv_addr.sin_addr.s_addr = INADDR_ANY;
 	serv_addr.sin_port = htons(PORT_NUM);
 
-	int status = bind(sockfd, 
+	int status = bind(sockfd,
 			(struct sockaddr*) &serv_addr, slen);
 	if (status < 0) error("ERROR on binding");
 
@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
 	while(1) {
 		struct sockaddr_in cli_addr;
 		socklen_t clen = sizeof(cli_addr);
-		int newsockfd = accept(sockfd, 
+		int newsockfd = accept(sockfd,
 			(struct sockaddr *) &cli_addr, &clen);
 		if (newsockfd < 0) error("ERROR on accept");
 
@@ -81,13 +81,13 @@ int main(int argc, char *argv[])
 		// prepare ThreadArgs structure to pass client socket
 		ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
 		if (args == NULL) error("ERROR creating thread argument");
-		
+
 		args->clisockfd = newsockfd;
 
 		pthread_t tid;
 		if (pthread_create(&tid, NULL, thread_main, (void*) args) != 0) error("ERROR creating a new thread");
 	}
 
-	return 0; 
+	return 0;
 }
 
