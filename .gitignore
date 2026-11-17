@@ -1,0 +1,4 @@
+*.exe
+main_client
+main_server
+.vscode
