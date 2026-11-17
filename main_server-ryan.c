@@ -30,10 +30,12 @@ typedef struct _ThreadArgs {
 typedef struct {
     int socket;
     char name[256];
+	char ip[32];
 } Client;
 
 Client clients[MAX_ROOMS][MAX_CLIENTS];
 int client_count[MAX_ROOMS];
+int numRooms = 1;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -47,6 +49,15 @@ void broadcast(char *message, int sender_socket, int room) {
     }
 
     pthread_mutex_unlock(&clients_mutex);
+}
+
+void printCLList() {
+	for (int room = 0; room < numRooms; room++) {
+		printf("Room: %d\n", room);
+		for (int cl = 0; cl < client_count[room]; cl++) {
+			printf("[%s(%s)]\n", clients[room][cl].name, clients[room][cl].ip);
+		}
+	}
 }
 
 void remove_client(int socket, int room) {
@@ -98,6 +109,7 @@ void* thread_main(void* args) {
 
     clients[room][client_count[room]].socket = clisockfd;
     strcpy(clients[room][client_count[room]].name, name);
+	strcpy(clients[room][client_count[room]].ip, inet_ntoa(ip));
     client_count[room]++;
 
     pthread_mutex_unlock(&clients_mutex);
@@ -167,6 +179,7 @@ int main(int argc, char *argv[])
 	listen(sockfd, 5);
 
 	while(1) {
+		printCLList();
 		struct sockaddr_in cli_addr;
 		socklen_t clen = sizeof(cli_addr);
 		int newsockfd = accept(sockfd,
