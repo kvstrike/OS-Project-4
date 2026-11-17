@@ -20,44 +20,106 @@ typedef struct _ThreadArgs {
 	int clisockfd;
 } ThreadArgs;
 
-void* thread_main(void* args)
-{
-	// make sure thread resources are deallocated upon return
-	pthread_detach(pthread_self());
+#define MAX_CLIENTS 100
 
-	// get socket descriptor from argument
-	int clisockfd = ((ThreadArgs*) args)->clisockfd;
-	free(args);
+typedef struct {
+    int socket;
+    char name[256];
+} Client;
 
-	//-------------------------------
-	// Now, we receive/send messages
-	char buffer[256];
-	int nsen, nrcv;
+Client clients[MAX_CLIENTS];
+int client_count = 0;
 
-	char name[256];
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-	nrcv = recv(clisockfd, buffer, 256, 0);
-	if (nrcv < 0) error("ERROR recv() failed");
+void broadcast(char *message, int sender_socket) {
+    pthread_mutex_lock(&clients_mutex);
 
-	strcpy(name, buffer);
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i].socket != sender_socket) {
+            send(clients[i].socket, message, strlen(message), 0);
+        }
+    }
 
-	printf("name %s", name);
+    pthread_mutex_unlock(&clients_mutex);
+}
 
-	nrcv = recv(clisockfd, buffer, 256, 0);
-	if (nrcv < 0) error("ERROR recv() failed");
+void remove_client(int socket) {
+    pthread_mutex_lock(&clients_mutex);
 
-	while (nrcv > 0) {
-		nsen = send(clisockfd, buffer, nrcv, 0);
-		if (nsen != nrcv) error("ERROR send() failed");
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i].socket == socket) {
 
-		nrcv = recv(clisockfd, buffer, 256, 0);
-		if (nrcv < 0) error("ERROR recv() failed");
-	}
+            for (int j = i; j < client_count - 1; j++) {
+                clients[j] = clients[j + 1];
+            }
 
-	close(clisockfd);
-	//-------------------------------
+            client_count--;
+            break;
+        }
+    }
 
-	return NULL;
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void* thread_main(void* args) {
+    pthread_detach(pthread_self());
+
+    int clisockfd = ((ThreadArgs*) args)->clisockfd;
+    free(args);
+
+    char buffer[256];
+    char name[256];
+
+    int nrcv = recv(clisockfd, name, sizeof(name) - 1, 0);
+
+    if (nrcv <= 0) {
+        close(clisockfd);
+        return NULL;
+    }
+
+    name[nrcv] = '\0';
+
+    pthread_mutex_lock(&clients_mutex);
+
+    if (client_count >= MAX_CLIENTS) {
+        pthread_mutex_unlock(&clients_mutex);
+        close(clisockfd);
+        return NULL;
+    }
+
+    clients[client_count].socket = clisockfd;
+    strcpy(clients[client_count].name, name);
+    client_count++;
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    while (1) {
+        nrcv = recv(clisockfd, buffer, sizeof(buffer) - 1, 0);
+
+        if (nrcv <= 0)
+            break;
+
+        buffer[nrcv] = '\0';
+
+        char message[516];
+
+        snprintf(message, sizeof(message), "[%s]: %s", name, buffer);
+
+        broadcast(message, clisockfd);
+    }
+
+	char message[516];
+
+    snprintf(message, sizeof(message), "%s has left the chat.", name);
+
+	broadcast(message, clisockfd);
+
+    remove_client(clisockfd);
+
+    close(clisockfd);
+
+    return NULL;
 }
 
 int main(int argc, char *argv[])
