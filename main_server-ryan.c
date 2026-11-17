@@ -25,40 +25,41 @@ typedef struct _ThreadArgs {
 } ThreadArgs;
 
 #define MAX_CLIENTS 100
+#define MAX_ROOMS 100
 
 typedef struct {
     int socket;
     char name[256];
 } Client;
 
-Client clients[MAX_CLIENTS];
-int client_count = 0;
+Client clients[MAX_ROOMS][MAX_CLIENTS];
+int client_count[MAX_ROOMS];
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void broadcast(char *message, int sender_socket) {
+void broadcast(char *message, int sender_socket, int room) {
     pthread_mutex_lock(&clients_mutex);
 
-    for (int i = 0; i < client_count; i++) {
-        if (clients[i].socket != sender_socket) {
-            send(clients[i].socket, message, strlen(message), 0);
+    for (int i = 0; i < client_count[room]; i++) {
+        if (clients[room][i].socket != sender_socket) {
+            send(clients[room][i].socket, message, strlen(message), 0);
         }
     }
 
     pthread_mutex_unlock(&clients_mutex);
 }
 
-void remove_client(int socket) {
+void remove_client(int socket, int room) {
     pthread_mutex_lock(&clients_mutex);
 
-    for (int i = 0; i < client_count; i++) {
-        if (clients[i].socket == socket) {
+    for (int i = 0; i < client_count[room]; i++) {
+        if (clients[room][i].socket == socket) {
 
-            for (int j = i; j < client_count - 1; j++) {
-                clients[j] = clients[j + 1];
+            for (int j = i; j < client_count[room] - 1; j++) {
+                clients[room][j] = clients[room][j + 1];
             }
 
-            client_count--;
+            client_count[room]--;
             break;
         }
     }
@@ -72,6 +73,8 @@ void* thread_main(void* args) {
     int clisockfd = ((ThreadArgs*) args)->clisockfd;
 	struct in_addr ip = ((ThreadArgs*) args)->ip;
     free(args);
+
+	int room = 0;
 
     char buffer[256];
     char name[256];
@@ -87,15 +90,15 @@ void* thread_main(void* args) {
 
     pthread_mutex_lock(&clients_mutex);
 
-    if (client_count >= MAX_CLIENTS) {
+    if (client_count[room] >= MAX_CLIENTS) {
         pthread_mutex_unlock(&clients_mutex);
         close(clisockfd);
         return NULL;
     }
 
-    clients[client_count].socket = clisockfd;
-    strcpy(clients[client_count].name, name);
-    client_count++;
+    clients[room][client_count[room]].socket = clisockfd;
+    strcpy(clients[room][client_count[room]].name, name);
+    client_count[room]++;
 
     pthread_mutex_unlock(&clients_mutex);
 
@@ -108,7 +111,7 @@ void* thread_main(void* args) {
 
     snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
 
-	broadcast(message, clisockfd);
+	broadcast(message, clisockfd, room);
 	}
 
     while (1) {
@@ -123,7 +126,7 @@ void* thread_main(void* args) {
 
         snprintf(message, sizeof(message), "%s[%s(%s)]: %s%s", color, name, inet_ntoa(ip), buffer, RESETRGB);
 
-        broadcast(message, clisockfd);
+        broadcast(message, clisockfd, room);
     }
 
 	{
@@ -131,10 +134,10 @@ void* thread_main(void* args) {
 
     snprintf(message, sizeof(message), "%s%s(%s) has left the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
 
-	broadcast(message, clisockfd);
+	broadcast(message, clisockfd, room);
 	}
 
-    remove_client(clisockfd);
+    remove_client(clisockfd, room);
 
     close(clisockfd);
 
@@ -144,6 +147,8 @@ void* thread_main(void* args) {
 int main(int argc, char *argv[])
 {
 	srand(time(NULL));
+
+	memset(client_count, 0, sizeof(int) * MAX_ROOMS);
 
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (sockfd < 0) error("ERROR opening socket");
