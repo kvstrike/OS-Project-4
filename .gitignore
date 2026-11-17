@@ -1,4 +1,6 @@
 *.exe
 main_client
 main_server
+main_client-ryan
+main_server-ryan
 .vscode

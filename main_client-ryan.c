@@ -42,6 +42,17 @@ int main(int argc, char *argv[])
 	int n;
 
 	while (1) {
+		printf("Please enter your name: ");
+		memset(buffer, 0, 256);
+		fgets(buffer, 255, stdin);
+		if (strlen(buffer) <= 1) continue;
+
+		n = send(sockfd, buffer, strlen(buffer), 0);
+		if (n < 0) error("ERROR writing to socket");
+		break;
+	}
+
+	while (1) {
 		printf("Please enter the message: ");
 		memset(buffer, 0, 256);
 		fgets(buffer, 255, stdin);

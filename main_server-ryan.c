@@ -34,6 +34,15 @@ void* thread_main(void* args)
 	char buffer[256];
 	int nsen, nrcv;
 
+	char name[256];
+
+	nrcv = recv(clisockfd, buffer, 256, 0);
+	if (nrcv < 0) error("ERROR recv() failed");
+
+	strcpy(name, buffer);
+
+	printf("name %s", name);
+
 	nrcv = recv(clisockfd, buffer, 256, 0);
 	if (nrcv < 0) error("ERROR recv() failed");
 
