@@ -10,6 +10,16 @@
 
 #define PORT_NUM 8083
 
+#define RGB(r, g, b) "\033[38;2;" #r ";" #g ";" #b "m"
+#define RGBSET(r) \
+    ((r) % 6 == 1 ? RGB(255, 0, 0)   : \
+     (r) % 6 == 2 ? RGB(0, 0, 255)   : \
+     (r) % 6 == 3 ? RGB(128, 0, 128) : \
+     (r) % 6 == 4 ? RGB(0, 255, 0)   : \
+     (r) % 6 == 5 ? RGB(255, 255, 0) : \
+                    RGB(0, 255, 255))
+#define RESETRGB "\033[0m"
+
 void error(const char *msg)
 {
 	perror(msg);
@@ -30,6 +40,8 @@ typedef struct {
 
 Client clients[MAX_CLIENTS];
 int client_count = 0;
+
+int currColor = 1;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -92,6 +104,7 @@ void* thread_main(void* args) {
 
     clients[client_count].socket = clisockfd;
     strcpy(clients[client_count].name, name);
+	int threadColor = currColor++;
     client_count++;
 
     pthread_mutex_unlock(&clients_mutex);
@@ -99,7 +112,7 @@ void* thread_main(void* args) {
 	{
 	char message[516];
 
-    snprintf(message, sizeof(message), "%s(%s) has joined the chat.", name, inet_ntoa(ip));
+    snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", RGBSET(threadColor), name, inet_ntoa(ip), RESETRGB);
 
 	broadcast(message, clisockfd);
 	}
@@ -112,9 +125,9 @@ void* thread_main(void* args) {
 
         buffer[nrcv] = '\0';
 
-        char message[516];
+        char message[540];
 
-        snprintf(message, sizeof(message), "[%s]: %s", name, buffer);
+        snprintf(message, sizeof(message), "%s[%s(%s)]: %s%s", RGBSET(threadColor), name, inet_ntoa(ip), buffer, RESETRGB);
 
         broadcast(message, clisockfd);
     }
@@ -122,7 +135,7 @@ void* thread_main(void* args) {
 	{
 	char message[516];
 
-    snprintf(message, sizeof(message), "%s(%s) has left the chat.", name, inet_ntoa(ip));
+    snprintf(message, sizeof(message), "%s%s(%s) has left the chat.%s", RGBSET(threadColor), name, inet_ntoa(ip), RESETRGB);
 
 	broadcast(message, clisockfd);
 	}
