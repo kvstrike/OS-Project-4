@@ -18,6 +18,7 @@ void error(const char *msg)
 
 typedef struct _ThreadArgs {
 	int clisockfd;
+	struct in_addr ip;
 } ThreadArgs;
 
 #define MAX_CLIENTS 100
@@ -66,6 +67,7 @@ void* thread_main(void* args) {
     pthread_detach(pthread_self());
 
     int clisockfd = ((ThreadArgs*) args)->clisockfd;
+	struct in_addr ip = ((ThreadArgs*) args)->ip;
     free(args);
 
     char buffer[256];
@@ -94,6 +96,14 @@ void* thread_main(void* args) {
 
     pthread_mutex_unlock(&clients_mutex);
 
+	{
+	char message[516];
+
+    snprintf(message, sizeof(message), "%s(%s) has joined the chat.", name, inet_ntoa(ip));
+
+	broadcast(message, clisockfd);
+	}
+
     while (1) {
         nrcv = recv(clisockfd, buffer, sizeof(buffer) - 1, 0);
 
@@ -109,11 +119,13 @@ void* thread_main(void* args) {
         broadcast(message, clisockfd);
     }
 
+	{
 	char message[516];
 
-    snprintf(message, sizeof(message), "%s has left the chat.", name);
+    snprintf(message, sizeof(message), "%s(%s) has left the chat.", name, inet_ntoa(ip));
 
 	broadcast(message, clisockfd);
+	}
 
     remove_client(clisockfd);
 
@@ -147,13 +159,12 @@ int main(int argc, char *argv[])
 			(struct sockaddr *) &cli_addr, &clen);
 		if (newsockfd < 0) error("ERROR on accept");
 
-		printf("Connected: %s\n", inet_ntoa(cli_addr.sin_addr));
-
 		// prepare ThreadArgs structure to pass client socket
 		ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
 		if (args == NULL) error("ERROR creating thread argument");
 
 		args->clisockfd = newsockfd;
+		args->ip = cli_addr.sin_addr;
 
 		pthread_t tid;
 		if (pthread_create(&tid, NULL, thread_main, (void*) args) != 0) error("ERROR creating a new thread");
