@@ -60,6 +60,9 @@ void printCLList() {
     for (int room = 0; room < numRooms; room++) {
 
         printf("Room: %d\n", room);
+        if (client_count[room] == 0) {
+            printf("No connected clients.\n");
+        }
 
         for (int cl = 0; cl < client_count[room]; cl++) {
 
@@ -127,6 +130,7 @@ void* thread_main(void* args) {
     client_count[room]++;
 
     pthread_mutex_unlock(&clients_mutex);
+    printCLList();
 
 	char color[32];
     snprintf(color, sizeof(color), "\033[38;2;%d;%d;%dm",
@@ -164,7 +168,7 @@ void* thread_main(void* args) {
 	}
 
     remove_client(clisockfd, room);
-
+    printCLList();
     close(clisockfd);
 
     return NULL;
@@ -193,7 +197,7 @@ int main(int argc, char *argv[])
 	listen(sockfd, 5);
 
 	while(1) {
-		printCLList();
+		
 		struct sockaddr_in cli_addr;
 		socklen_t clen = sizeof(cli_addr);
 		int newsockfd = accept(sockfd,
