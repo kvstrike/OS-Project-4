@@ -31,6 +31,11 @@ typedef struct {
     int socket;
     char name[256];
 	char ip[32];
+
+    //stores the color of the client in RGB format
+    int red;
+    int green;
+    int blue;
 } Client;
 
 Client clients[MAX_ROOMS][MAX_CLIENTS];
@@ -124,25 +129,64 @@ void* thread_main(void* args) {
         return NULL;
     }
 
-    clients[room][client_count[room]].socket = clisockfd;
-    strcpy(clients[room][client_count[room]].name, name);
-	strcpy(clients[room][client_count[room]].ip, inet_ntoa(ip));
+    // Position where the new client will be stored
+    int client_index = client_count[room];
+
+    clients[room][client_index].socket = clisockfd;
+
+    strcpy(clients[room][client_index].name, name);
+
+    inet_ntop(AF_INET, &ip,
+        clients[room][client_index].ip,
+        sizeof(clients[room][client_index].ip));
+
+    // Generate a unique color
+    int red;
+    int green;
+    int blue;
+
+    int uniqueColor;
+
+    do {
+
+        red = rand() % 256;
+        green = rand() % 256;
+        blue = rand() % 256;
+
+        uniqueColor = 1;
+
+        // Check the colors of existing clients
+        for (int cl = 0; cl < client_count[room]; cl++) {
+
+            if (clients[room][cl].red == red &&
+                clients[room][cl].green == green &&
+                clients[room][cl].blue == blue) {
+
+                uniqueColor = 0;
+                break;
+            }
+        }
+
+    } while (uniqueColor == 0);
+
+    // Store the assigned color
+    clients[room][client_index].red = red;
+    clients[room][client_index].green = green;
+    clients[room][client_index].blue = blue;
+
     client_count[room]++;
 
     pthread_mutex_unlock(&clients_mutex);
+
     printCLList();
+    char color[32];
 
-	char color[32];
-    snprintf(color, sizeof(color), "\033[38;2;%d;%d;%dm",
-        rand() % 256, rand() % 256, rand() % 256);
-
-	{
+    snprintf(color, sizeof(color), "\033[38;2;%d;%d;%dm", red, green, blue);
 	char message[516];
 
     snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
 
 	broadcast(message, clisockfd, room);
-	}
 
     while (1) {
         nrcv = recv(clisockfd, buffer, sizeof(buffer) - 1, 0);
