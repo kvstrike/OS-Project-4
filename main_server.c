@@ -48,6 +48,40 @@ int numRooms = 0;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+int send_all(int socket, const char *message){
+    int total_sent = 0;
+    int message_length = strlen(message);
+
+    while (total_sent < message_length) {
+        int sent = send(socket, message + total_sent, message_length - total_sent, 0);
+        if (sent <= 0) {
+            return -1; // Error occurred
+        }
+        total_sent += sent;
+    }
+
+    return total_sent;
+}
+
+int recv_line(int socket, char *buffer, size_t max_length) {
+    int position = 0;
+    char c;
+
+    while(position < max_length - 1){
+        int received = recv(socket, &c, 1, 0);
+
+        if(received <= 0){
+            return -1; // Error or connection closed
+        }
+        if(c == '\n'){
+            break; // End of line
+        }
+        buffer[position++] = c;
+    }
+    buffer[position] = '\0'; 
+    return position; // Return the number of characters read
+}
+
 int createRoom(){
     pthread_mutex_lock(&clients_mutex);
 
@@ -124,21 +158,96 @@ void remove_client(int socket, int room)
     pthread_mutex_unlock(&clients_mutex);
 }
 
+int handle_room_request(int socket, int *selected_room){
+    char request[128];
+    char response[4096];
+    if(recv_line(socket, request, sizeof(request)) <= 0){
+        return -1; // Error or connection closed
+    }
+
+    if(strcmp(request, "NEW") == 0){
+        int room = createRoom();
+
+        if(room == -1){
+            snprintf(response, sizeof(response), "ERROR: Cannot create new room\n");
+            send_all(socket, response);
+            return -1;
+        }
+
+        snprintf(response, sizeof(response), "OK %d\n", room);
+
+        if(send_all(socket, response) <= 0){
+            return -1; // Error sending response
+        }
+        *selected_room = room;
+        printf("Created new room: %d\n", room);
+        return 0;
+    }
+
+    if(strcmp(request, "LIST") == 0){
+        pthread_mutex_lock(&clients_mutex);
+        snprintf(response, sizeof(response), "ROOMS %d\n", numRooms);
+        for(int room = 0; room < numRooms; room++){
+            char room_info[32];
+            snprintf(room_info, sizeof(room_info), "%d %d\n", room, client_count[room]);
+            strncat(response, room_info, sizeof(response) - strlen(response) - 1);
+        }
+
+        strncat(response, "\n", sizeof(response) - strlen(response) - 1);
+        pthread_mutex_unlock(&clients_mutex);
+
+        if(send_all(socket, response) <= 0){
+            return -1; // Error sending response
+        }
+        
+        if(recv_line(socket, request, sizeof(request)) <= 0){
+            return -1; // Error or connection closed
+        }
+    }
+
+        int room;
+        if(sscanf(request, "JOIN %d", &room) != 1){
+            send_all(socket, "ERROR: Invalid JOIN command\n");
+            return -1;
+        }
+
+        pthread_mutex_lock(&clients_mutex);
+        int room_exists = (room >= 0 && room < numRooms);
+        pthread_mutex_unlock(&clients_mutex);
+
+        if(!room_exists){
+            send_all(socket, "ERROR: Room does not exist\n");
+            return -1;
+        }
+
+        snprintf(response, sizeof(response), "OK %d\n", room);
+        if(send_all(socket, response) <= 0){
+            return -1; // Error sending response
+        }
+        *selected_room = room;
+        return 0;
+}
 
 void* thread_main(void* args)
 {
     pthread_detach(pthread_self());
 
+    ThreadArgs *thread_args = (ThreadArgs*) args;
+
     int clisockfd = ((ThreadArgs*) args)->clisockfd;
     struct in_addr ip = ((ThreadArgs*) args)->ip;
-
-    // Get the room assigned to this client
-    int room = ((ThreadArgs*) args)->room;
 
     free(args);
 
     char buffer[256];
     char name[256];
+
+    int room = -1;
+
+    if(handle_room_request(clisockfd, &room) < 0){
+        close(clisockfd);
+        return NULL;
+    }
 
     int nrcv = recv(clisockfd, name, sizeof(name) - 1, 0);
 
@@ -153,6 +262,7 @@ void* thread_main(void* args)
 
     if (client_count[room] >= MAX_CLIENTS) {
         pthread_mutex_unlock(&clients_mutex);
+        send_all(clisockfd, "ERROR: Room is full\n");
         close(clisockfd);
         return NULL;
     }
@@ -221,7 +331,6 @@ void* thread_main(void* args)
         color, name, inet_ntoa(ip), RESETRGB);
 
     broadcast(message, clisockfd, room);
-
 
     while (1) {
 
@@ -320,13 +429,14 @@ int main(int argc, char *argv[])
         args->clisockfd = newsockfd;
         args->ip = cli_addr.sin_addr;
 
-        // Temporary: all clients still join room 0
-        args->room = firstRoom;
-
         pthread_t tid;
 
-        if (pthread_create(&tid, NULL, thread_main, (void*) args) != 0)
-            error("ERROR creating a new thread");
+        int thread_status = pthread_create(&tid, NULL, thread_main, (void*) args);
+        if (thread_status != 0){
+            free(args);
+            close(newsockfd);
+            fprintf(stderr, "ERROR creating a new thread: %s\n", strerror(thread_status));
+        }
     }
 
     return 0;
