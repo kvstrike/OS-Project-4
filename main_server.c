@@ -42,10 +42,26 @@ typedef struct {
 
 Client clients[MAX_ROOMS][MAX_CLIENTS];
 int client_count[MAX_ROOMS];
-int numRooms = 1;
+
+// current number of rooms created
+int numRooms = 0;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+int createRoom(){
+    pthread_mutex_lock(&clients_mutex);
+
+    if(numRooms >= MAX_ROOMS){
+        pthread_mutex_unlock(&clients_mutex);
+        return -1; // Cannot create more rooms
+    }
+
+    int room = numRooms;
+    client_count[room] = 0;
+    numRooms++;
+    pthread_mutex_unlock(&clients_mutex);
+    return room;
+}
 
 void broadcast(char *message, int sender_socket, int room)
 {
@@ -53,16 +69,12 @@ void broadcast(char *message, int sender_socket, int room)
 
     for (int i = 0; i < client_count[room]; i++) {
         if (clients[room][i].socket != sender_socket) {
-            send(clients[room][i].socket,
-                 message,
-                 strlen(message),
-                 0);
+            send(clients[room][i].socket, message, strlen(message), 0);
         }
     }
 
     pthread_mutex_unlock(&clients_mutex);
 }
-
 
 void printCLList()
 {
@@ -256,6 +268,14 @@ int main(int argc, char *argv[])
 
     memset(client_count, 0, sizeof(int) * MAX_ROOMS);
 
+    int firstRoom = createRoom();
+
+    if (firstRoom == -1) {
+        error("ERROR creating the first room");
+    }
+
+    printf("Created room %d\n", firstRoom);
+
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (sockfd < 0)
@@ -301,7 +321,7 @@ int main(int argc, char *argv[])
         args->ip = cli_addr.sin_addr;
 
         // Temporary: all clients still join room 0
-        args->room = 0;
+        args->room = firstRoom;
 
         pthread_t tid;
 

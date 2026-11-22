@@ -96,9 +96,19 @@ int main(int argc, char **argv)
     // Start receiver thread
     pthread_t receiver;
 
-    if (pthread_create(&receiver, NULL, receive_messages, &sockfd) != 0){}
-        error("ERROR creating receiver thread");
+    int thread_status = pthread_create(
+        &receiver,
+        NULL,
+        receive_messages,
+        &sockfd
+    );
 
+    if (thread_status != 0) {
+        fprintf(stderr, "ERROR creating receiver thread: %s\n", strerror(thread_status));
+
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
     // Send messages
     while (1) {
         printf("Please enter the message: ");
