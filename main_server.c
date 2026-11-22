@@ -15,13 +15,15 @@
 
 void error(const char *msg)
 {
-	perror(msg);
-	exit(1);
+    perror(msg);
+    exit(1);
 }
 
+// Information passed to each client thread
 typedef struct _ThreadArgs {
-	int clisockfd;
-	struct in_addr ip;
+    int clisockfd;
+    struct in_addr ip;
+    int room; // Room assigned to this client
 } ThreadArgs;
 
 #define MAX_CLIENTS 100
@@ -30,9 +32,9 @@ typedef struct _ThreadArgs {
 typedef struct {
     int socket;
     char name[256];
-	char ip[32];
+    char ip[32];
 
-    //stores the color of the client in RGB format
+    // Stores the color of the client in RGB format
     int red;
     int green;
     int blue;
@@ -44,20 +46,26 @@ int numRooms = 1;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void broadcast(char *message, int sender_socket, int room) {
+
+void broadcast(char *message, int sender_socket, int room)
+{
     pthread_mutex_lock(&clients_mutex);
 
     for (int i = 0; i < client_count[room]; i++) {
         if (clients[room][i].socket != sender_socket) {
-            send(clients[room][i].socket, message, strlen(message), 0);
+            send(clients[room][i].socket,
+                 message,
+                 strlen(message),
+                 0);
         }
     }
 
     pthread_mutex_unlock(&clients_mutex);
 }
 
-void printCLList() {
 
+void printCLList()
+{
     pthread_mutex_lock(&clients_mutex);
 
     printf("\n===== Connected Clients =====\n");
@@ -65,6 +73,7 @@ void printCLList() {
     for (int room = 0; room < numRooms; room++) {
 
         printf("Room: %d\n", room);
+
         if (client_count[room] == 0) {
             printf("No connected clients.\n");
         }
@@ -82,10 +91,13 @@ void printCLList() {
     pthread_mutex_unlock(&clients_mutex);
 }
 
-void remove_client(int socket, int room) {
+
+void remove_client(int socket, int room)
+{
     pthread_mutex_lock(&clients_mutex);
 
     for (int i = 0; i < client_count[room]; i++) {
+
         if (clients[room][i].socket == socket) {
 
             for (int j = i; j < client_count[room] - 1; j++) {
@@ -100,14 +112,18 @@ void remove_client(int socket, int room) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
-void* thread_main(void* args) {
+
+void* thread_main(void* args)
+{
     pthread_detach(pthread_self());
 
     int clisockfd = ((ThreadArgs*) args)->clisockfd;
-	struct in_addr ip = ((ThreadArgs*) args)->ip;
-    free(args);
+    struct in_addr ip = ((ThreadArgs*) args)->ip;
 
-	int room = 0;
+    // Get the room assigned to this client
+    int room = ((ThreadArgs*) args)->room;
+
+    free(args);
 
     char buffer[256];
     char name[256];
@@ -155,7 +171,7 @@ void* thread_main(void* args) {
 
         uniqueColor = 1;
 
-        // Check the colors of existing clients
+        // Check the colors of existing clients in this room
         for (int cl = 0; cl < client_count[room]; cl++) {
 
             if (clients[room][cl].red == red &&
@@ -179,16 +195,24 @@ void* thread_main(void* args) {
     pthread_mutex_unlock(&clients_mutex);
 
     printCLList();
+
     char color[32];
 
-    snprintf(color, sizeof(color), "\033[38;2;%d;%d;%dm", red, green, blue);
-	char message[516];
+    snprintf(color, sizeof(color),
+        "\033[38;2;%d;%d;%dm",
+        red, green, blue);
 
-    snprintf(message, sizeof(message), "%s%s(%s) has joined the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
+    char message[516];
 
-	broadcast(message, clisockfd, room);
+    snprintf(message, sizeof(message),
+        "%s%s(%s) has joined the chat.%s",
+        color, name, inet_ntoa(ip), RESETRGB);
+
+    broadcast(message, clisockfd, room);
+
 
     while (1) {
+
         nrcv = recv(clisockfd, buffer, sizeof(buffer) - 1, 0);
 
         if (nrcv <= 0)
@@ -198,67 +222,92 @@ void* thread_main(void* args) {
 
         char message[600];
 
-        snprintf(message, sizeof(message), "%s[%s(%s)]: %s%s", color, name, inet_ntoa(ip), buffer, RESETRGB);
+        snprintf(message, sizeof(message),
+            "%s[%s(%s)]: %s%s",
+            color, name, inet_ntoa(ip), buffer, RESETRGB);
 
         broadcast(message, clisockfd, room);
     }
 
-	{
-	char message[516];
 
-    snprintf(message, sizeof(message), "%s%s(%s) has left the chat.%s", color, name, inet_ntoa(ip), RESETRGB);
+    {
+        char message[516];
 
-	broadcast(message, clisockfd, room);
-	}
+        snprintf(message, sizeof(message),
+            "%s%s(%s) has left the chat.%s",
+            color, name, inet_ntoa(ip), RESETRGB);
+
+        broadcast(message, clisockfd, room);
+    }
 
     remove_client(clisockfd, room);
+
     printCLList();
+
     close(clisockfd);
 
     return NULL;
 }
 
+
 int main(int argc, char *argv[])
 {
-	srand(time(NULL));
+    srand(time(NULL));
 
-	memset(client_count, 0, sizeof(int) * MAX_ROOMS);
+    memset(client_count, 0, sizeof(int) * MAX_ROOMS);
 
-	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-	if (sockfd < 0) error("ERROR opening socket");
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
-	struct sockaddr_in serv_addr;
-	socklen_t slen = sizeof(serv_addr);
-	memset((char*) &serv_addr, 0, sizeof(serv_addr));
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(PORT_NUM);
+    if (sockfd < 0)
+        error("ERROR opening socket");
 
-	int status = bind(sockfd,
-			(struct sockaddr*) &serv_addr, slen);
-	if (status < 0) error("ERROR on binding");
+    struct sockaddr_in serv_addr;
+    socklen_t slen = sizeof(serv_addr);
 
-	listen(sockfd, 5);
+    memset((char*) &serv_addr, 0, sizeof(serv_addr));
 
-	while(1) {
-		
-		struct sockaddr_in cli_addr;
-		socklen_t clen = sizeof(cli_addr);
-		int newsockfd = accept(sockfd,
-			(struct sockaddr *) &cli_addr, &clen);
-		if (newsockfd < 0) error("ERROR on accept");
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(PORT_NUM);
 
-		// prepare ThreadArgs structure to pass client socket
-		ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
-		if (args == NULL) error("ERROR creating thread argument");
+    int status = bind(sockfd,
+        (struct sockaddr*) &serv_addr,
+        slen);
 
-		args->clisockfd = newsockfd;
-		args->ip = cli_addr.sin_addr;
+    if (status < 0)
+        error("ERROR on binding");
 
-		pthread_t tid;
-		if (pthread_create(&tid, NULL, thread_main, (void*) args) != 0) error("ERROR creating a new thread");
-	}
+    listen(sockfd, 5);
 
-	return 0;
+    while (1) {
+
+        struct sockaddr_in cli_addr;
+        socklen_t clen = sizeof(cli_addr);
+
+        int newsockfd = accept(sockfd,
+            (struct sockaddr*) &cli_addr,
+            &clen);
+
+        if (newsockfd < 0)
+            error("ERROR on accept");
+
+        // Prepare ThreadArgs structure to pass client information
+        ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
+
+        if (args == NULL)
+            error("ERROR creating thread argument");
+
+        args->clisockfd = newsockfd;
+        args->ip = cli_addr.sin_addr;
+
+        // Temporary: all clients still join room 0
+        args->room = 0;
+
+        pthread_t tid;
+
+        if (pthread_create(&tid, NULL, thread_main, (void*) args) != 0)
+            error("ERROR creating a new thread");
+    }
+
+    return 0;
 }
-

@@ -59,15 +59,11 @@ int main(int argc, char **argv)
 
     serv_addr.sin_family = AF_INET;
 
-    memcpy(&serv_addr.sin_addr.s_addr,
-           server->h_addr,
-           server->h_length);
+    memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
 
     serv_addr.sin_port = htons(PORT_NUM);
 
-    int status = connect(sockfd,
-                         (struct sockaddr*)&serv_addr,
-                         sizeof(serv_addr));
+    int status = connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
 
     if (status < 0)
         error("ERROR connecting");
@@ -100,7 +96,7 @@ int main(int argc, char **argv)
     // Start receiver thread
     pthread_t receiver;
 
-    if (pthread_create(&receiver, NULL, receive_messages, &sockfd) != 0)
+    if (pthread_create(&receiver, NULL, receive_messages, &sockfd) != 0){}
         error("ERROR creating receiver thread");
 
     // Send messages
