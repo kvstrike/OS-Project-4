@@ -17,10 +17,12 @@ void error(const char *msg)
 	exit(0);
 }
 
+
 int send_all(int socket, const char *message){
     size_t total_sent = 0;
     size_t message_length = strlen(message);
 
+    // Keep sending until the entire message is sent
     while(total_sent < message_length){
         int n = send(socket, message + total_sent, message_length - total_sent, 0);
         if(n <= 0){
@@ -30,6 +32,7 @@ int send_all(int socket, const char *message){
     }
     return 0;
 }
+// Function to receive a line of text from the socket
 int recv_line(int sockfd, char *buffer, int max_length)
 {
     int position = 0;
@@ -56,6 +59,8 @@ int recv_line(int sockfd, char *buffer, int max_length)
 
     return position;
 }
+
+// Function to create a new room on the server
 int choose_room(int sockfd)
 {
     char buffer[256];
@@ -71,9 +76,11 @@ int choose_room(int sockfd)
     // Read the first line: ROOMS <number>
     int n = recv_line(sockfd, buffer, sizeof(buffer));
 
-    if (n < 0)
+    if (n < 0){
         error("ERROR receiving room list");
+    }
 
+    // number of rooms reported by the server
     int server_room_count;
 
     if (sscanf(buffer, "ROOMS %d", &server_room_count) != 1) {
@@ -84,29 +91,23 @@ int choose_room(int sockfd)
 
     printf("\nAvailable rooms:\n");
 
-    /*
-        The server sends each room as:
-        room_number client_count
-
-        The list ends with an empty line.
-    */
     while (1) {
         n = recv_line(sockfd, buffer, sizeof(buffer));
 
-        if (n < 0)
+        if (n < 0){
             error("ERROR receiving room information");
+        }
 
         // Empty line means the room list is finished.
-        if (n == 0)
+        if (n == 0){
             break;
+        }
 
         int room_number;
         int client_count;
 
         if (sscanf(buffer, "%d %d", &room_number, &client_count) == 2) {
-            printf("Room %d - %d client(s)\n",
-                   room_number,
-                   client_count);
+            printf("Room %d - %d client(s)\n", room_number, client_count);
 
             if (number_of_rooms < MAX_ROOMS) {
                 room_numbers[number_of_rooms] = room_number;
@@ -136,8 +137,7 @@ int choose_room(int sockfd)
         long selected_room = strtol(buffer, &end_pointer, 10);
 
         // Skip any whitespace after the number.
-        while (*end_pointer == ' ' || *end_pointer == '\t' ||
-               *end_pointer == '\n') {
+        while (*end_pointer == ' ' || *end_pointer == '\t' || *end_pointer == '\n') {
             end_pointer++;
         }
 
@@ -172,7 +172,7 @@ int request_room(int sockfd, int argc, char **argv)
     int selected_room = -1;
 
     if (argc == 2) {
-        // No room argument: show available rooms.
+        // No room argument show available rooms.
         selected_room = choose_room(sockfd);
 
         snprintf(
@@ -218,8 +218,9 @@ int request_room(int sockfd, int argc, char **argv)
     // Wait for the server's confirmation.
     int n = recv_line(sockfd, response, sizeof(response));
 
-    if (n < 0)
+    if (n < 0){
         error("ERROR receiving room confirmation");
+    }
 
     int confirmed_room;
 

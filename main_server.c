@@ -34,7 +34,7 @@ typedef struct {
     char name[256];
     char ip[32];
 
-    // Stores the color of the client in RGB format
+    // Stores the color of the client in RGB format so there are no duplicates in the same room
     int red;
     int green;
     int blue;
@@ -112,10 +112,12 @@ void broadcast(char *message, int sender_socket, int room)
 
 void printCLList()
 {
+    // Print the list of connected clients in each room
     pthread_mutex_lock(&clients_mutex);
 
     printf("\n===== Connected Clients =====\n");
 
+    // Iterate through each room
     for (int room = 0; room < numRooms; room++) {
 
         printf("Room: %d\n", room);
@@ -137,7 +139,7 @@ void printCLList()
     pthread_mutex_unlock(&clients_mutex);
 }
 
-
+// Function to remove a client from the list of connected clients
 void remove_client(int socket, int room)
 {
     pthread_mutex_lock(&clients_mutex);
@@ -158,6 +160,7 @@ void remove_client(int socket, int room)
     pthread_mutex_unlock(&clients_mutex);
 }
 
+// Function to handle room requests from clients
 int handle_room_request(int socket, int *selected_room){
     char request[128];
     char response[4096];
@@ -184,6 +187,7 @@ int handle_room_request(int socket, int *selected_room){
         return 0;
     }
 
+    // if user requested a list of rooms, send the list and wait for another request
     if(strcmp(request, "LIST") == 0){
         pthread_mutex_lock(&clients_mutex);
         snprintf(response, sizeof(response), "ROOMS %d\n", numRooms);
@@ -199,7 +203,7 @@ int handle_room_request(int socket, int *selected_room){
         if(send_all(socket, response) <= 0){
             return -1; // Error sending response
         }
-        
+
         if(recv_line(socket, request, sizeof(request)) <= 0){
             return -1; // Error or connection closed
         }
@@ -228,6 +232,7 @@ int handle_room_request(int socket, int *selected_room){
         return 0;
 }
 
+// Thread function to handle communication with a client
 void* thread_main(void* args)
 {
     pthread_detach(pthread_self());
@@ -244,11 +249,13 @@ void* thread_main(void* args)
 
     int room = -1;
 
+    // Handle room request from the client
     if(handle_room_request(clisockfd, &room) < 0){
         close(clisockfd);
         return NULL;
     }
 
+    // Receive the client's name
     int nrcv = recv(clisockfd, name, sizeof(name) - 1, 0);
 
     if (nrcv <= 0) {
@@ -283,6 +290,7 @@ void* thread_main(void* args)
     int green;
     int blue;
 
+    // Ensure the generated color is unique within the room
     int uniqueColor;
 
     do {
