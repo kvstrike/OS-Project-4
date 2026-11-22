@@ -125,12 +125,18 @@ int choose_room(int sockfd)
 
     // Ask the user which room they want to join.
     while (1) {
-        printf("\nEnter the room number you want to join: ");
+        printf("\nEnter the room number or type new to create a room: ");
         fflush(stdout);
 
         if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
             close(sockfd);
             exit(EXIT_FAILURE);
+        }
+
+        buffer[strcspn(buffer, "\n")] = '\0'; // Remove newline character
+
+        if(strcmp(buffer, "new") == 0){
+            return -1; // Indicate that a new room should be created
         }
 
         char *end_pointer;
@@ -175,12 +181,14 @@ int request_room(int sockfd, int argc, char **argv)
         // No room argument show available rooms.
         selected_room = choose_room(sockfd);
 
-        snprintf(
-            request,
-            sizeof(request),
-            "JOIN %d\n",
-            selected_room
-        );
+        if(selected_room == -1){
+            // User chose to create a new room.
+            strcpy(request, "NEW\n");
+            printf("Requesting a new room...\n");
+        }
+        else{
+            snprintf(request, sizeof(request), "JOIN %d\n", selected_room);
+        }
     }
     else if (strcmp(argv[2], "new") == 0) {
         // Create a new room.

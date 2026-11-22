@@ -161,75 +161,120 @@ void remove_client(int socket, int room)
 }
 
 // Function to handle room requests from clients
-int handle_room_request(int socket, int *selected_room){
+int handle_room_request(int socket, int *selected_room)
+{
     char request[128];
     char response[4096];
-    if(recv_line(socket, request, sizeof(request)) <= 0){
-        return -1; // Error or connection closed
+
+    if (recv_line(socket, request, sizeof(request)) <= 0) {
+        return -1;
     }
 
-    if(strcmp(request, "NEW") == 0){
+    // Handle a NEW request immediately
+    if (strcmp(request, "NEW") == 0) {
         int room = createRoom();
 
-        if(room == -1){
-            snprintf(response, sizeof(response), "ERROR: Cannot create new room\n");
-            send_all(socket, response);
+        if (room == -1) {
+            send_all(socket, "ERROR: Cannot create new room\n");
             return -1;
         }
 
         snprintf(response, sizeof(response), "OK %d\n", room);
 
-        if(send_all(socket, response) <= 0){
-            return -1; // Error sending response
+        if (send_all(socket, response) <= 0) {
+            return -1;
         }
+
         *selected_room = room;
+
         printf("Created new room: %d\n", room);
+
         return 0;
     }
 
-    // if user requested a list of rooms, send the list and wait for another request
-    if(strcmp(request, "LIST") == 0){
+    // If the user requested a list of rooms
+    // send the list and wait for another request
+    if (strcmp(request, "LIST") == 0) {
+
         pthread_mutex_lock(&clients_mutex);
+
         snprintf(response, sizeof(response), "ROOMS %d\n", numRooms);
-        for(int room = 0; room < numRooms; room++){
+
+        for (int room = 0; room < numRooms; room++) {
             char room_info[32];
+
             snprintf(room_info, sizeof(room_info), "%d %d\n", room, client_count[room]);
+
             strncat(response, room_info, sizeof(response) - strlen(response) - 1);
         }
 
         strncat(response, "\n", sizeof(response) - strlen(response) - 1);
+
         pthread_mutex_unlock(&clients_mutex);
 
-        if(send_all(socket, response) <= 0){
-            return -1; // Error sending response
+        if (send_all(socket, response) <= 0) {
+            return -1;
         }
 
-        if(recv_line(socket, request, sizeof(request)) <= 0){
-            return -1; // Error or connection closed
+        // Wait for the user's room selection
+        if (recv_line(socket, request, sizeof(request)) <= 0) {
+            return -1;
+        }
+
+        // NEW: User wants to create a room from the room list
+        if (strcmp(request, "NEW") == 0) {
+
+            int room = createRoom();
+
+            if (room == -1) {
+                send_all(socket, "ERROR: Cannot create new room\n");
+                return -1;
+            }
+
+            snprintf(response, sizeof(response), "OK %d\n", room);
+
+            if (send_all(socket, response) <= 0) {
+                return -1;
+            }
+
+            *selected_room = room;
+
+            printf("Created new room: %d\n", room);
+
+            return 0;
         }
     }
 
-        int room;
-        if(sscanf(request, "JOIN %d", &room) != 1){
-            send_all(socket, "ERROR: Invalid JOIN command\n");
-            return -1;
-        }
+    // Otherwise, the request should be JOIN
+    int room;
 
-        pthread_mutex_lock(&clients_mutex);
-        int room_exists = (room >= 0 && room < numRooms);
-        pthread_mutex_unlock(&clients_mutex);
+    if (sscanf(request, "JOIN %d", &room) != 1) {
+        send_all(socket, "ERROR: Invalid JOIN command\n");
+        return -1;
+    }
 
-        if(!room_exists){
-            send_all(socket, "ERROR: Room does not exist\n");
-            return -1;
-        }
+    pthread_mutex_lock(&clients_mutex);
 
-        snprintf(response, sizeof(response), "OK %d\n", room);
-        if(send_all(socket, response) <= 0){
-            return -1; // Error sending response
-        }
-        *selected_room = room;
-        return 0;
+    int room_exists = (room >= 0 && room < numRooms);
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    // If the room does not exist, send an error message to the client
+    if (!room_exists) {
+        send_all(socket, "ERROR: Room does not exist\n");
+        return -1;
+    }
+
+    // Send confirmation to the client
+    snprintf(response, sizeof(response), "OK %d\n", room);
+
+    if (send_all(socket, response) <= 0) {
+        return -1;
+    }
+
+    *selected_room = room;
+
+    return 0;
 }
 
 // Thread function to handle communication with a client
