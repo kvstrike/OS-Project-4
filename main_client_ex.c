@@ -718,7 +718,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 
-		char finalSend[260];
+		char finalSend[300];
 
 		snprintf(finalSend, sizeof(finalSend), "%zu %s", strlen(buffer), buffer);
 

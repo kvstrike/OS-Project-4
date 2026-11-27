@@ -413,7 +413,7 @@ int main(int argc, char **argv)
 
 		buffer[strcspn(buffer, "\n")] = '\0';
 
-		char finalSend[260];
+		char finalSend[300];
 
 		snprintf(finalSend, sizeof(finalSend), "%zu %s", strlen(buffer), buffer);
 
