@@ -301,30 +301,58 @@ int request_room(ssh_channel channel, int argc, char **argv)
     return confirmed_room;
 }
 
-int stream_file(ssh_channel channel, const char *filename, const char *header) {
+int stream_file(ssh_channel channel, const char *filename, const char *header)
+{
     FILE *file = fopen(filename, "rb");
     if (!file)
         return -1;
 
-    // Send optional header
-    if (header != NULL) {
-        size_t header_len = strlen(header);
-        size_t sent = 0;
+    // Get file size
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return -1;
+    }
 
-        while (sent < header_len) {
-            int n = ssh_channel_write(
-                channel,
-                header + sent,
-                header_len - sent
-            );
+    long file_size = ftell(file);
+    if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return -1;
+    }
 
-            if (n <= 0) {
-                fclose(file);
-                return -1;
-            }
+    size_t header_len = header ? strlen(header) : 0;
+    size_t total_size = (size_t)file_size + header_len;
 
-            sent += n;
+    // Send total size followed by a space
+    char size_buffer[32];
+    int size_len = snprintf(size_buffer, sizeof(size_buffer), "%zu ", total_size);
+
+    if (size_len < 0 || (size_t)size_len >= sizeof(size_buffer)) {
+        fclose(file);
+        return -1;
+    }
+
+    size_t sent = 0;
+
+    while (sent < (size_t)size_len) {
+        int n = ssh_channel_write(channel, size_buffer + sent,
+                                  (uint32_t)((size_t)size_len - sent));
+        if (n <= 0) {
+            fclose(file);
+            return -1;
         }
+        sent += (size_t)n;
+    }
+
+    // Send header
+    sent = 0;
+    while (sent < header_len) {
+        int n = ssh_channel_write(channel, header + sent,
+                                  (uint32_t)(header_len - sent));
+        if (n <= 0) {
+            fclose(file);
+            return -1;
+        }
+        sent += (size_t)n;
     }
 
     // Stream file contents
@@ -332,21 +360,16 @@ int stream_file(ssh_channel channel, const char *filename, const char *header) {
     size_t bytes_read;
 
     while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        size_t sent = 0;
+        sent = 0;
 
         while (sent < bytes_read) {
-            int n = ssh_channel_write(
-                channel,
-                buffer + sent,
-                bytes_read - sent
-            );
-
+            int n = ssh_channel_write(channel, buffer + sent,
+                                      (uint32_t)(bytes_read - sent));
             if (n <= 0) {
                 fclose(file);
                 return -1;
             }
-
-            sent += n;
+            sent += (size_t)n;
         }
     }
 

@@ -471,6 +471,7 @@ void* thread_main(void* args)
             break;
 
         broadcast(msg, clisockfd, room);
+		free(msg);
     }
 
 
