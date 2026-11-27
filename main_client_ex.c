@@ -3,12 +3,14 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <string.h>
+#include <libssh/libssh.h>
 
 #define PORT_NUM 8083
+#define SSH_PORT 22
 #define MAX_ROOMS 100
 
 void error(const char *msg)
@@ -17,29 +19,107 @@ void error(const char *msg)
 	exit(0);
 }
 
+void ssh_error_exit(ssh_session session, const char *msg)
+{
+        fprintf(stderr, "%s: %s\n", msg, ssh_get_error(session));
+        ssh_disconnect(session);
+        ssh_free(session);
+        exit(1);
+}
 
-int send_all(int socket, const char *message){
+// Check the server's host key against ~/.ssh/known_hosts
+int verify_knownhost(ssh_session session)
+{
+        ssh_key srv_pubkey = NULL;
+        unsigned char *hash = NULL;
+        size_t hlen;
+
+        if (ssh_get_server_publickey(session, &srv_pubkey) < 0) return -1;
+        int rc = ssh_get_publickey_hash(srv_pubkey,
+                        SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+        ssh_key_free(srv_pubkey);
+        if (rc < 0) return -1;
+
+        enum ssh_known_hosts_e state = ssh_session_is_known_server(session);
+        switch (state) {
+        case SSH_KNOWN_HOSTS_OK:
+                break;
+        case SSH_KNOWN_HOSTS_CHANGED:
+        case SSH_KNOWN_HOSTS_OTHER:
+                fprintf(stderr, "WARNING: host key for server changed!\n");
+                ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+                ssh_clean_pubkey_hash(&hash);
+                return -1;
+        case SSH_KNOWN_HOSTS_NOT_FOUND:
+        case SSH_KNOWN_HOSTS_UNKNOWN: {
+                fprintf(stderr, "The server is unknown. Fingerprint:\n");
+                ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+                fprintf(stderr, "Trust this host? (yes/no): ");
+                char ans[16];
+                if (fgets(ans, sizeof(ans), stdin) == NULL ||
+                                strncmp(ans, "yes", 3) != 0) {
+                        ssh_clean_pubkey_hash(&hash);
+                        return -1;
+                }
+                if (ssh_session_update_known_hosts(session) < 0) {
+                        fprintf(stderr, "Could not update known_hosts: %s\n",
+                                        ssh_get_error(session));
+                }
+                break;
+        }
+        case SSH_KNOWN_HOSTS_ERROR:
+                fprintf(stderr, "Error: %s\n", ssh_get_error(session));
+                ssh_clean_pubkey_hash(&hash);
+                return -1;
+        }
+        ssh_clean_pubkey_hash(&hash);
+        return 0;
+}
+
+int authenticate(ssh_session session)
+{
+        int rc = ssh_userauth_publickey_auto(session, NULL, NULL);
+        if (rc == SSH_AUTH_SUCCESS) return 0;
+
+        char prompt[] = "Password: ";
+        char password[128];
+        if (ssh_getpass(prompt, password, sizeof(password), 0, 0) < 0)
+                return -1;
+        rc = ssh_userauth_password(session, NULL, password);
+        memset(password, 0, sizeof(password));
+        return rc == SSH_AUTH_SUCCESS ? 0 : -1;
+}
+
+
+int send_all(ssh_channel channel, const char *message)
+{
     size_t total_sent = 0;
     size_t message_length = strlen(message);
 
-    // Keep sending until the entire message is sent
-    while(total_sent < message_length){
-        int n = send(socket, message + total_sent, message_length - total_sent, 0);
-        if(n <= 0){
-            return -1; // Error occurred
-        }
+    while (total_sent < message_length) {
+        int n = ssh_channel_write(
+            channel,
+            message + total_sent,
+            message_length - total_sent
+        );
+
+        if (n <= 0)
+            return -1;
+
         total_sent += n;
     }
+
     return 0;
 }
+
 // Function to receive a line of text from the socket
-int recv_line(int sockfd, char *buffer, int max_length)
+int recv_line(ssh_channel channel, char *buffer, int max_length)
 {
     int position = 0;
     char character;
 
     while (position < max_length - 1) {
-        int n = recv(sockfd, &character, 1, 0);
+        int n = ssh_channel_read(channel, &character, 1, 0);
 
         if (n <= 0) {
             if (position == 0)
@@ -61,7 +141,7 @@ int recv_line(int sockfd, char *buffer, int max_length)
 }
 
 // Function to create a new room on the server
-int choose_room(int sockfd)
+int choose_room(ssh_channel channel)
 {
     char buffer[256];
 
@@ -69,39 +149,31 @@ int choose_room(int sockfd)
     int room_counts[MAX_ROOMS];
     int number_of_rooms = 0;
 
-    // Ask the server for its room list.
-    if (send_all(sockfd, "LIST\n") < 0)
+    if (send_all(channel, "LIST\n") < 0)
         error("ERROR requesting room list");
 
-    // Read the first line: ROOMS <number>
-    int n = recv_line(sockfd, buffer, sizeof(buffer));
+    int n = recv_line(channel, buffer, sizeof(buffer));
 
-    if (n < 0){
+    if (n < 0)
         error("ERROR receiving room list");
-    }
 
-    // number of rooms reported by the server
     int server_room_count;
 
     if (sscanf(buffer, "ROOMS %d", &server_room_count) != 1) {
         fprintf(stderr, "Invalid room list from server: %s\n", buffer);
-        close(sockfd);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     printf("\nAvailable rooms:\n");
 
     while (1) {
-        n = recv_line(sockfd, buffer, sizeof(buffer));
+        n = recv_line(channel, buffer, sizeof(buffer));
 
-        if (n < 0){
+        if (n < 0)
             error("ERROR receiving room information");
-        }
 
-        // Empty line means the room list is finished.
-        if (n == 0){
+        if (n == 0)
             break;
-        }
 
         int room_number;
         int client_count;
@@ -119,40 +191,32 @@ int choose_room(int sockfd)
 
     if (number_of_rooms == 0) {
         fprintf(stderr, "No rooms are currently available.\n");
-        close(sockfd);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
-    // Ask the user which room they want to join.
     while (1) {
         printf("\nEnter the room number or type new to create a room: ");
         fflush(stdout);
 
-        if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
-            close(sockfd);
-            exit(EXIT_FAILURE);
-        }
+        if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+            return -1;
 
-        buffer[strcspn(buffer, "\n")] = '\0'; // Remove newline character
+        buffer[strcspn(buffer, "\n")] = '\0';
 
-        if(strcmp(buffer, "new") == 0){
-            return -1; // Indicate that a new room should be created
-        }
+        if (strcmp(buffer, "new") == 0)
+            return -1;
 
         char *end_pointer;
         long selected_room = strtol(buffer, &end_pointer, 10);
 
-        // Skip any whitespace after the number.
-        while (*end_pointer == ' ' || *end_pointer == '\t' || *end_pointer == '\n') {
+        while (*end_pointer == ' ' || *end_pointer == '\t')
             end_pointer++;
-        }
 
         if (end_pointer == buffer || *end_pointer != '\0') {
             printf("Please enter a valid room number.\n");
             continue;
         }
 
-        // Check that the room appeared in the server's list.
         int room_exists = 0;
 
         for (int i = 0; i < number_of_rooms; i++) {
@@ -170,7 +234,8 @@ int choose_room(int sockfd)
         return (int)selected_room;
     }
 }
-int request_room(int sockfd, int argc, char **argv)
+
+int request_room(ssh_channel channel, int argc, char **argv)
 {
     char request[256];
     char response[256];
@@ -178,63 +243,48 @@ int request_room(int sockfd, int argc, char **argv)
     int selected_room = -1;
 
     if (argc == 2) {
-        // No room argument show available rooms.
-        selected_room = choose_room(sockfd);
+        selected_room = choose_room(channel);
 
-        if(selected_room == -1){
-            // User chose to create a new room.
+        if (selected_room == -1) {
             strcpy(request, "NEW\n");
             printf("Requesting a new room...\n");
         }
-        else{
+        else {
             snprintf(request, sizeof(request), "JOIN %d\n", selected_room);
         }
     }
     else if (strcmp(argv[2], "new") == 0) {
-        // Create a new room.
         strcpy(request, "NEW\n");
-
         printf("Requesting a new room...\n");
     }
     else {
-        // The argument should be a room number.
         char *end_pointer;
         long room_number = strtol(argv[2], &end_pointer, 10);
 
-        if (end_pointer == argv[2] || *end_pointer != '\0' || room_number < 0 || room_number >= MAX_ROOMS) {
+        if (end_pointer == argv[2] || *end_pointer != '\0' ||
+            room_number < 0 || room_number >= MAX_ROOMS) {
 
             fprintf(stderr, "Room argument must be 'new' or a room number.\n");
-
-            close(sockfd);
             exit(EXIT_FAILURE);
         }
 
         selected_room = (int)room_number;
 
-        snprintf(
-            request,
-            sizeof(request),
-            "JOIN %d\n",
-            selected_room
-        );
+        snprintf(request, sizeof(request), "JOIN %d\n", selected_room);
     }
 
-    // Send NEW or JOIN request to the server.
-    if (send_all(sockfd, request) < 0)
+    if (send_all(channel, request) < 0)
         error("ERROR sending room request");
 
-    // Wait for the server's confirmation.
-    int n = recv_line(sockfd, response, sizeof(response));
+    int n = recv_line(channel, response, sizeof(response));
 
-    if (n < 0){
+    if (n < 0)
         error("ERROR receiving room confirmation");
-    }
 
     int confirmed_room;
 
     if (sscanf(response, "OK %d", &confirmed_room) != 1) {
         fprintf(stderr, "Server rejected room request: %s\n", response);
-        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
@@ -245,13 +295,16 @@ int request_room(int sockfd, int argc, char **argv)
 
 void* receive_messages(void* arg)
 {
-    int sockfd = *(int*)arg;
+    ssh_channel channel = *(ssh_channel*)arg;
     char buffer[256];
 
     while (1) {
-        memset(buffer, 0, sizeof(buffer));
-
-        int n = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
+        int n = ssh_channel_read(
+            channel,
+            buffer,
+            sizeof(buffer) - 1,
+            0
+        );
 
         if (n <= 0) {
             printf("\nDisconnected from server.\n");
@@ -270,34 +323,54 @@ void* receive_messages(void* arg)
 
 int main(int argc, char **argv)
 {
-    if(argc < 2 || argc > 3) {
+    if (argc < 2 || argc > 3) {
         fprintf(stderr, "Usage: %s <server_address> [room_number|new]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0)
-        error("ERROR opening socket");
+    // Create SSH session
+    ssh_session session = ssh_new();
 
-    struct hostent* server = gethostbyname(argv[1]);
-    if (server == NULL)
-        error("ERROR, no such host");
+    if (session == NULL)
+        error("ERROR creating SSH session");
 
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));
+    // Configure SSH
+    ssh_options_set(session, SSH_OPTIONS_HOST, argv[1]);
 
-    serv_addr.sin_family = AF_INET;
+    int ssh_port = SSH_PORT;
+    ssh_options_set(session, SSH_OPTIONS_PORT, &ssh_port);
+    ssh_options_parse_config(session, NULL);
 
-    memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
+    // Connect, verify and authenticate
+    if (ssh_connect(session) != SSH_OK)
+        ssh_error_exit(session, "ERROR connecting");
 
-    serv_addr.sin_port = htons(PORT_NUM);
+    if (verify_knownhost(session) < 0)
+        ssh_error_exit(session, "ERROR verifying host");
 
-    int status = connect(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+    if (authenticate(session) < 0)
+        ssh_error_exit(session, "ERROR authenticating");
 
-    if (status < 0)
-        error("ERROR connecting");
+    // Create forwarded channel
+    ssh_channel channel = ssh_channel_new(session);
 
-    request_room(sockfd, argc, argv);
+    if (channel == NULL)
+        ssh_error_exit(session, "ERROR creating channel");
+
+    if (ssh_channel_open_forward(
+            channel,
+            "localhost",
+            PORT_NUM,
+            "localhost",
+            0
+        ) != SSH_OK) {
+        ssh_channel_free(channel);
+        ssh_error_exit(session, "ERROR opening forward channel");
+    }
+
+    // Request room
+    request_room(channel, argc, argv);
+
     char buffer[256];
 
     // Get username
@@ -313,11 +386,9 @@ int main(int argc, char **argv)
         if (buffer[0] == '\n')
             continue;
 
-		buffer[strcspn(buffer, "\n")] = '\0';
+        buffer[strcspn(buffer, "\n")] = '\0';
 
-        int n = send(sockfd, buffer, strlen(buffer), 0);
-
-        if (n <= 0)
+        if (send_all(channel, buffer) < 0)
             error("ERROR writing username");
 
         break;
@@ -330,15 +401,21 @@ int main(int argc, char **argv)
         &receiver,
         NULL,
         receive_messages,
-        &sockfd
+        &channel
     );
 
     if (thread_status != 0) {
-        fprintf(stderr, "ERROR creating receiver thread: %s\n", strerror(thread_status));
+        fprintf(stderr, "ERROR creating receiver thread: %s\n",
+                strerror(thread_status));
 
-        close(sockfd);
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+        ssh_disconnect(session);
+        ssh_free(session);
+
         exit(EXIT_FAILURE);
     }
+
     // Send messages
     while (1) {
         printf("Please enter the message: ");
@@ -349,27 +426,27 @@ int main(int argc, char **argv)
         if (fgets(buffer, sizeof(buffer), stdin) == NULL)
             break;
 
-        // Empty message means disconnect
         if (buffer[0] == '\n')
             break;
 
-		buffer[strcspn(buffer, "\n")] = '\0';
+        buffer[strcspn(buffer, "\n")] = '\0';
 
-        int n = send(sockfd, buffer, strlen(buffer), 0);
-
-        if (n <= 0) {
+        if (send_all(channel, buffer) < 0) {
             printf("ERROR sending message\n");
             break;
         }
     }
 
-    // Shut down connection
-    shutdown(sockfd, SHUT_RDWR);
+    // Disconnect
+    ssh_channel_send_eof(channel);
 
-    // Wait for receiver thread
     pthread_join(receiver, NULL);
 
-    close(sockfd);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+
+    ssh_disconnect(session);
+    ssh_free(session);
 
     return 0;
 }
