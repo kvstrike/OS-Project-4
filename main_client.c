@@ -355,7 +355,11 @@ int main(int argc, char **argv)
 
 		buffer[strcspn(buffer, "\n")] = '\0';
 
-        int n = send(sockfd, buffer, strlen(buffer), 0);
+		char finalSend[260];
+
+		snprintf(finalSend, sizeof(finalSend), "%zu %s", strlen(buffer), buffer);
+
+        int n = send(sockfd, finalSend, strlen(finalSend), 0);
 
         if (n <= 0) {
             printf("ERROR sending message\n");

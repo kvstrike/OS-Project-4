@@ -1,3 +1,4 @@
+#include <openssl/core.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -13,6 +14,13 @@
 #define SSH_PORT 22
 #define MAX_ROOMS 100
 
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+
+int sending = 0;
+
+static char name[64];
+
 void error(const char *msg)
 {
 	perror(msg);
@@ -21,73 +29,73 @@ void error(const char *msg)
 
 void ssh_error_exit(ssh_session session, const char *msg)
 {
-        fprintf(stderr, "%s: %s\n", msg, ssh_get_error(session));
-        ssh_disconnect(session);
-        ssh_free(session);
-        exit(1);
+	fprintf(stderr, "%s: %s\n", msg, ssh_get_error(session));
+	ssh_disconnect(session);
+	ssh_free(session);
+	exit(1);
 }
 
 // Check the server's host key against ~/.ssh/known_hosts
 int verify_knownhost(ssh_session session)
 {
-        ssh_key srv_pubkey = NULL;
-        unsigned char *hash = NULL;
-        size_t hlen;
+	ssh_key srv_pubkey = NULL;
+	unsigned char *hash = NULL;
+	size_t hlen;
 
-        if (ssh_get_server_publickey(session, &srv_pubkey) < 0) return -1;
-        int rc = ssh_get_publickey_hash(srv_pubkey,
-                        SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
-        ssh_key_free(srv_pubkey);
-        if (rc < 0) return -1;
+	if (ssh_get_server_publickey(session, &srv_pubkey) < 0) return -1;
+	int rc = ssh_get_publickey_hash(srv_pubkey,
+					SSH_PUBLICKEY_HASH_SHA256, &hash, &hlen);
+	ssh_key_free(srv_pubkey);
+	if (rc < 0) return -1;
 
-        enum ssh_known_hosts_e state = ssh_session_is_known_server(session);
-        switch (state) {
-        case SSH_KNOWN_HOSTS_OK:
-                break;
-        case SSH_KNOWN_HOSTS_CHANGED:
-        case SSH_KNOWN_HOSTS_OTHER:
-                fprintf(stderr, "WARNING: host key for server changed!\n");
-                ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
-                ssh_clean_pubkey_hash(&hash);
-                return -1;
-        case SSH_KNOWN_HOSTS_NOT_FOUND:
-        case SSH_KNOWN_HOSTS_UNKNOWN: {
-                fprintf(stderr, "The server is unknown. Fingerprint:\n");
-                ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
-                fprintf(stderr, "Trust this host? (yes/no): ");
-                char ans[16];
-                if (fgets(ans, sizeof(ans), stdin) == NULL ||
-                                strncmp(ans, "yes", 3) != 0) {
-                        ssh_clean_pubkey_hash(&hash);
-                        return -1;
-                }
-                if (ssh_session_update_known_hosts(session) < 0) {
-                        fprintf(stderr, "Could not update known_hosts: %s\n",
-                                        ssh_get_error(session));
-                }
-                break;
-        }
-        case SSH_KNOWN_HOSTS_ERROR:
-                fprintf(stderr, "Error: %s\n", ssh_get_error(session));
-                ssh_clean_pubkey_hash(&hash);
-                return -1;
-        }
-        ssh_clean_pubkey_hash(&hash);
-        return 0;
+	enum ssh_known_hosts_e state = ssh_session_is_known_server(session);
+	switch (state) {
+	case SSH_KNOWN_HOSTS_OK:
+			break;
+	case SSH_KNOWN_HOSTS_CHANGED:
+	case SSH_KNOWN_HOSTS_OTHER:
+			fprintf(stderr, "WARNING: host key for server changed!\n");
+			ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+			ssh_clean_pubkey_hash(&hash);
+			return -1;
+	case SSH_KNOWN_HOSTS_NOT_FOUND:
+	case SSH_KNOWN_HOSTS_UNKNOWN: {
+			fprintf(stderr, "The server is unknown. Fingerprint:\n");
+			ssh_print_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hlen);
+			fprintf(stderr, "Trust this host? (yes/no): ");
+			char ans[16];
+			if (fgets(ans, sizeof(ans), stdin) == NULL ||
+							strncmp(ans, "yes", 3) != 0) {
+					ssh_clean_pubkey_hash(&hash);
+					return -1;
+			}
+			if (ssh_session_update_known_hosts(session) < 0) {
+					fprintf(stderr, "Could not update known_hosts: %s\n",
+									ssh_get_error(session));
+			}
+			break;
+	}
+	case SSH_KNOWN_HOSTS_ERROR:
+			fprintf(stderr, "Error: %s\n", ssh_get_error(session));
+			ssh_clean_pubkey_hash(&hash);
+			return -1;
+	}
+	ssh_clean_pubkey_hash(&hash);
+	return 0;
 }
 
 int authenticate(ssh_session session)
 {
-        int rc = ssh_userauth_publickey_auto(session, NULL, NULL);
-        if (rc == SSH_AUTH_SUCCESS) return 0;
+	int rc = ssh_userauth_publickey_auto(session, NULL, NULL);
+	if (rc == SSH_AUTH_SUCCESS) return 0;
 
-        char prompt[] = "Password: ";
-        char password[128];
-        if (ssh_getpass(prompt, password, sizeof(password), 0, 0) < 0)
-                return -1;
-        rc = ssh_userauth_password(session, NULL, password);
-        memset(password, 0, sizeof(password));
-        return rc == SSH_AUTH_SUCCESS ? 0 : -1;
+	char prompt[] = "Password: ";
+	char password[128];
+	if (ssh_getpass(prompt, password, sizeof(password), 0, 0) < 0)
+			return -1;
+	rc = ssh_userauth_password(session, NULL, password);
+	memset(password, 0, sizeof(password));
+	return rc == SSH_AUTH_SUCCESS ? 0 : -1;
 }
 
 
@@ -293,30 +301,127 @@ int request_room(ssh_channel channel, int argc, char **argv)
     return confirmed_room;
 }
 
+int stream_file(ssh_channel channel, const char *filename, const char *header) {
+    FILE *file = fopen(filename, "rb");
+    if (!file)
+        return -1;
+
+    // Send optional header
+    if (header != NULL) {
+        size_t header_len = strlen(header);
+        size_t sent = 0;
+
+        while (sent < header_len) {
+            int n = ssh_channel_write(
+                channel,
+                header + sent,
+                header_len - sent
+            );
+
+            if (n <= 0) {
+                fclose(file);
+                return -1;
+            }
+
+            sent += n;
+        }
+    }
+
+    // Stream file contents
+    char buffer[8192];
+    size_t bytes_read;
+
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        size_t sent = 0;
+
+        while (sent < bytes_read) {
+            int n = ssh_channel_write(
+                channel,
+                buffer + sent,
+                bytes_read - sent
+            );
+
+            if (n <= 0) {
+                fclose(file);
+                return -1;
+            }
+
+            sent += n;
+        }
+    }
+
+    int failed = ferror(file);
+    fclose(file);
+
+    return failed ? -1 : 0;
+}
+
 void* receive_messages(void* arg)
 {
     ssh_channel channel = *(ssh_channel*)arg;
     char buffer[256];
 
     while (1) {
-        int n = ssh_channel_read(
-            channel,
-            buffer,
-            sizeof(buffer) - 1,
-            0
-        );
+		int n = ssh_channel_read(
+			channel,
+			buffer,
+			sizeof(buffer) - 1,
+			0
+		);
 
-        if (n <= 0) {
-            printf("\nDisconnected from server.\n");
-            break;
-        }
+		if (n <= 0) {
+			printf("\nDisconnected from server.\n");
+			break;
+		}
 
-        buffer[n] = '\0';
+		buffer[n] = '\0';
 
-        printf("\r%s\033[K\n", buffer);
-        printf("Please enter the message: ");
-        fflush(stdout);
-    }
+		// char answer[16];
+
+		// Find the file header, ignoring color codes and sender information.
+		// char *file_header = strstr(buffer, FILE_HEADER);
+
+		// if (file_header != NULL) {
+		// 	// The text following FILE_HEADER contains recipient and filename.
+		// 	char *details = file_header + sizeof(FILE_HEADER) - 1;
+		// 	char recipient[64] = {0};
+		// 	char filename[64] = {0};
+
+		// 	if (sscanf(details, "%63s %63s", recipient, filename) == 2 && strcmp(name, recipient) == 0) {
+		// 		printf("\nThis file transfer request is for you!\033[K\n");
+		// 		printf("Filename: %s\n", filename);
+		// 		printf("Would you like to download it to the current path? (y/N): ");
+		// 		fflush(stdout);
+
+		// 		pthread_mutex_lock(&mutex);
+
+		// 		sending = 1;
+
+		// 		while (sending == 1) {
+		// 			pthread_cond_wait(&cond, &mutex);
+		// 		}
+
+		// 		if (sending == 2) {
+		// 			printf("Accepted!\n");
+		// 		}
+		// 		else if (sending == 3) {
+		// 			printf("Declined!\n");
+		// 		}
+
+		// 		sending = 0;
+
+		// 		pthread_mutex_unlock(&mutex);
+		// 	}
+		// 	fflush(stdout);
+		// 	continue;
+		// }
+		// else {
+			printf("\r%s\033[K\n", buffer);
+		// }
+
+		printf("Please enter the message: ");
+		fflush(stdout);
+	}
 
     return NULL;
 }
@@ -371,24 +476,27 @@ int main(int argc, char **argv)
     // Request room
     request_room(channel, argc, argv);
 
-    char buffer[256];
-
     // Get username
     while (1) {
         printf("Please enter your name: ");
         fflush(stdout);
 
-        memset(buffer, 0, sizeof(buffer));
+        memset(name, 0, sizeof(name));
 
-        if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+        if (fgets(name, sizeof(name), stdin) == NULL)
             break;
 
-        if (buffer[0] == '\n')
+        if (name[0] == '\n')
             continue;
 
-        buffer[strcspn(buffer, "\n")] = '\0';
+        name[strcspn(name, "\n")] = '\0';
 
-        if (send_all(channel, buffer) < 0)
+		for (int i = 0; name[i] != '\0'; i++) {
+			if (name[i] == ' ')
+				name[i] = '_';
+		}
+
+        if (send_all(channel, name) < 0)
             error("ERROR writing username");
 
         break;
@@ -416,6 +524,8 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
+	char buffer[256];
+
     // Send messages
     while (1) {
         printf("Please enter the message: ");
@@ -423,18 +533,65 @@ int main(int argc, char **argv)
 
         memset(buffer, 0, sizeof(buffer));
 
-        if (fgets(buffer, sizeof(buffer), stdin) == NULL)
-            break;
+        if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
+			if (sending) {
+				sending = 3;
+				continue;
+			}
+			break;
+		}
 
-        if (buffer[0] == '\n')
+        if (buffer[0] == '\n') {
+			if (sending) {
+				sending = 3;
+				continue;
+			}
             break;
+		}
+		buffer[strcspn(buffer, "\n")] = '\0';
 
-        buffer[strcspn(buffer, "\n")] = '\0';
+		pthread_mutex_lock(&mutex);
 
-        if (send_all(channel, buffer) < 0) {
-            printf("ERROR sending message\n");
-            break;
-        }
+		if (sending == 1) {
+			if (strcmp(buffer, "y") == 0 || strcmp(buffer, "Y") == 0)
+				sending = 2;
+			else
+				sending = 3;
+
+			pthread_cond_signal(&cond);
+    		pthread_mutex_unlock(&mutex);
+			continue;
+		}
+
+		pthread_mutex_unlock(&mutex);
+
+		if (strncmp(buffer, "[SEND] ", 7) == 0) {
+			char recipient[64];
+			char filename[64];
+
+			strcpy(recipient, strtok(buffer + 7, " "));
+			strcpy(filename, strtok(NULL, " "));
+
+			printf("Sending %s to %s\n", filename, recipient);
+
+			snprintf(buffer, sizeof(buffer),
+					"[DM] %s [FILE] %s ",
+					recipient, filename);
+
+
+			stream_file(channel, filename, buffer);
+
+			printf("File sent!\n");
+			continue;
+		}
+
+		char finalSend[260];
+
+		snprintf(finalSend, sizeof(finalSend), "%zu %s", strlen(buffer), buffer);
+
+		if (send_all(channel, finalSend) < 0) {
+			printf("ERROR sending message\n");
+		}
     }
 
     // Disconnect

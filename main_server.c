@@ -78,7 +78,7 @@ int recv_line(int socket, char *buffer, size_t max_length) {
         }
         buffer[position++] = c;
     }
-    buffer[position] = '\0'; 
+    buffer[position] = '\0';
     return position; // Return the number of characters read
 }
 
@@ -277,6 +277,78 @@ int handle_room_request(int socket, int *selected_room)
     return 0;
 }
 
+int recv_exact(int sock, void *buffer, size_t length)
+{
+    size_t total = 0;
+
+    while (total < length) {
+        ssize_t n = recv(sock, (char *)buffer + total, length - total, 0);
+
+        if (n <= 0)
+            return -1;
+
+        total += n;
+    }
+
+    return 0;
+}
+
+char *receive_message(int sock, size_t *message_size,
+                      const char *header, const char *footer)
+{
+    char length_buffer[32];
+    size_t i = 0;
+    char c;
+
+    while (i < sizeof(length_buffer) - 1) {
+        if (recv(sock, &c, 1, 0) <= 0)
+            return NULL;
+
+        if (c == ' ')
+            break;
+
+        if (c < '0' || c > '9')
+            return NULL;
+
+        length_buffer[i++] = c;
+    }
+
+    if (i == 0 || i == sizeof(length_buffer) - 1)
+        return NULL;
+
+    length_buffer[i] = '\0';
+
+    char *end;
+    unsigned long long parsed_size = strtoull(length_buffer, &end, 10);
+
+    if (*end || parsed_size == 0 || parsed_size > 10 * 1024 * 1024)
+        return NULL;
+
+    size_t size = (size_t)parsed_size;
+    size_t header_len = header ? strlen(header) : 0;
+    size_t footer_len = footer ? strlen(footer) : 0;
+
+    char *message = malloc(header_len + size + footer_len + 1);
+    if (!message)
+        return NULL;
+
+    if (header_len)
+        memcpy(message, header, header_len);
+
+    if (recv_exact(sock, message + header_len, size) < 0) {
+        free(message);
+        return NULL;
+    }
+
+    if (footer_len)
+        memcpy(message + header_len + size, footer, footer_len);
+
+    message[header_len + size + footer_len] = '\0';
+    *message_size = header_len + size + footer_len;
+
+    return message;
+}
+
 // Thread function to handle communication with a client
 void* thread_main(void* args)
 {
@@ -386,21 +458,19 @@ void* thread_main(void* args)
     broadcast(message, clisockfd, room);
 
     while (1) {
+		size_t nrcv = 0;
 
-        nrcv = recv(clisockfd, buffer, sizeof(buffer) - 1, 0);
+		char tmp[293];
+		snprintf(tmp, sizeof(tmp),
+            "%s[%s(%s)]: ",
+            color, name, inet_ntoa(ip));
+
+		char *msg = receive_message(clisockfd, &nrcv, tmp, RESETRGB);
 
         if (nrcv <= 0)
             break;
 
-        buffer[nrcv] = '\0';
-
-        char message[600];
-
-        snprintf(message, sizeof(message),
-            "%s[%s(%s)]: %s%s",
-            color, name, inet_ntoa(ip), buffer, RESETRGB);
-
-        broadcast(message, clisockfd, room);
+        broadcast(msg, clisockfd, room);
     }
 
 
