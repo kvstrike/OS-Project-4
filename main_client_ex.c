@@ -379,68 +379,178 @@ int stream_file(ssh_channel channel, const char *filename, const char *header)
     return failed ? -1 : 0;
 }
 
+int save_file(const char *filename, const char *data, size_t file_size)
+{
+    FILE *file = fopen(filename, "wb");
+
+    if (!file)
+        return -1;
+
+    size_t written = fwrite(data, 1, file_size, file);
+
+    if (written != file_size || fclose(file) != 0)
+        return -1;
+
+    return 0;
+}
+
+char *receive_message(ssh_channel channel, size_t *message_size)
+{
+    char size_buffer[32];
+    size_t i = 0;
+    char c;
+
+    // Read size prefix
+    while (i < sizeof(size_buffer) - 1) {
+        int n = ssh_channel_read(channel, &c, 1, 0);
+
+        if (n <= 0)
+            return NULL;
+
+        if (c == ' ')
+            break;
+
+        if (c < '0' || c > '9')
+            return NULL;
+
+        size_buffer[i++] = c;
+    }
+
+    if (i == 0 || i == sizeof(size_buffer) - 1)
+        return NULL;
+
+    size_buffer[i] = '\0';
+
+    char *end;
+    unsigned long long parsed_size = strtoull(size_buffer, &end, 10);
+
+    if (*end != '\0' || parsed_size > 100 * 1024 * 1024)
+        return NULL;
+
+    size_t size = (size_t)parsed_size;
+
+    char *buffer = malloc(size + 1);
+    if (!buffer)
+        return NULL;
+
+    size_t received = 0;
+
+    while (received < size) {
+        int n = ssh_channel_read(
+            channel,
+            buffer + received,
+            (uint32_t)(size - received),
+            0
+        );
+
+        if (n <= 0) {
+            free(buffer);
+            return NULL;
+        }
+
+        received += (size_t)n;
+    }
+
+    buffer[size] = '\0';
+    *message_size = size;
+
+    return buffer;
+}
+
 void* receive_messages(void* arg)
 {
     ssh_channel channel = *(ssh_channel*)arg;
-    char buffer[256];
 
     while (1) {
-		int n = ssh_channel_read(
-			channel,
-			buffer,
-			sizeof(buffer) - 1,
-			0
-		);
+		size_t message_size;
+		char *buffer = receive_message(channel, &message_size);
 
-		if (n <= 0) {
-			printf("\nDisconnected from server.\n");
-			break;
+		if (!buffer)
+    		break;
+
+		if (strstr(buffer, "] has DM'd you: [FILE] ") != NULL) {
+			char *marker = strstr(buffer, "] has DM'd you: [FILE] ");
+			if (!marker)
+				continue;
+
+			char *sender_start = strchr(strchr(buffer, '[') + 1, '[');
+
+			if (!sender_start || sender_start >= marker)
+				continue;
+
+			size_t sender_len = (size_t)(marker - sender_start) + 1;
+			char *sender = strndup(sender_start, sender_len);
+
+			if (!sender)
+				continue;
+
+			char *filename_start = marker + strlen("] has DM'd you: [FILE] ");
+			size_t remaining = message_size - (size_t)(filename_start - buffer);
+
+			char *filename_end = memchr(filename_start, ' ', remaining);
+
+			if (!filename_end) {
+				free(sender);
+				continue;
+			}
+
+			char *filename = strndup(filename_start,
+									(size_t)(filename_end - filename_start));
+
+			if (!filename) {
+				free(sender);
+				continue;
+			}
+
+			char *data_start = filename_end + 1;
+			size_t header_size = (size_t)(data_start - buffer);
+
+			if (header_size > message_size) {
+				free(sender);
+				free(filename);
+				continue;
+			}
+
+			size_t file_size = message_size - header_size - 8;
+			char *data = malloc(file_size ? file_size : 1);
+
+			if (!data) {
+				free(sender);
+				free(filename);
+				continue;
+			}
+
+			memcpy(data, data_start, file_size);
+
+			printf("\nThis file transfer request is for you!\033[K\n");
+			printf("Filename: %s\n", filename);
+			printf("Sender: %s\n", sender);
+			printf("Would you like to download it to the current path? (y/N): ");
+			fflush(stdout);
+
+			pthread_mutex_lock(&mutex);
+
+			sending = 1;
+
+			while (sending == 1)
+				pthread_cond_wait(&cond, &mutex);
+
+			if (sending == 2)
+				save_file(filename, data, file_size);
+			// else if (sending == 3)
+			// 	pass;
+			sending = 0;
+
+			pthread_mutex_unlock(&mutex);
+
+			free(sender);
+			free(filename);
+			free(data);
+			continue;
 		}
-
-		buffer[n] = '\0';
-
-		// char answer[16];
-
-		// Find the file header, ignoring color codes and sender information.
-		// char *file_header = strstr(buffer, FILE_HEADER);
-
-		// if (file_header != NULL) {
-		// 	// The text following FILE_HEADER contains recipient and filename.
-		// 	char *details = file_header + sizeof(FILE_HEADER) - 1;
-		// 	char recipient[64] = {0};
-		// 	char filename[64] = {0};
-
-		// 	if (sscanf(details, "%63s %63s", recipient, filename) == 2 && strcmp(name, recipient) == 0) {
-		// 		printf("\nThis file transfer request is for you!\033[K\n");
-		// 		printf("Filename: %s\n", filename);
-		// 		printf("Would you like to download it to the current path? (y/N): ");
-		// 		fflush(stdout);
-
-		// 		pthread_mutex_lock(&mutex);
-
-		// 		sending = 1;
-
-		// 		while (sending == 1) {
-		// 			pthread_cond_wait(&cond, &mutex);
-		// 		}
-
-		// 		if (sending == 2) {
-		// 			printf("Accepted!\n");
-		// 		}
-		// 		else if (sending == 3) {
-		// 			printf("Declined!\n");
-		// 		}
-
-		// 		sending = 0;
-
-		// 		pthread_mutex_unlock(&mutex);
-		// 	}
-		// 	fflush(stdout);
-		// 	continue;
-		// }
-		// else {
+		else {
 			printf("\r%s\033[K\n", buffer);
-		// }
+		}
 
 		printf("Please enter the message: ");
 		fflush(stdout);

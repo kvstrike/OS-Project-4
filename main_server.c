@@ -15,29 +15,29 @@
 
 void error(const char *msg)
 {
-    perror(msg);
-    exit(1);
+	perror(msg);
+	exit(1);
 }
 
 // Information passed to each client thread
 typedef struct _ThreadArgs {
-    int clisockfd;
-    struct in_addr ip;
-    int room; // Room assigned to this client
+	int clisockfd;
+	struct in_addr ip;
+	int room; // Room assigned to this client
 } ThreadArgs;
 
 #define MAX_CLIENTS 100
 #define MAX_ROOMS 100
 
 typedef struct {
-    int socket;
-    char name[256];
-    char ip[32];
+	int socket;
+	char name[256];
+	char ip[32];
 
-    // Stores the color of the client in RGB format so there are no duplicates in the same room
-    int red;
-    int green;
-    int blue;
+	// Stores the color of the client in RGB format so there are no duplicates in the same room
+	int red;
+	int green;
+	int blue;
 } Client;
 
 Client clients[MAX_ROOMS][MAX_CLIENTS];
@@ -49,519 +49,564 @@ int numRooms = 0;
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int send_all(int socket, const char *message){
-    int total_sent = 0;
-    int message_length = strlen(message);
+	int total_sent = 0;
+	int message_length = strlen(message);
 
-    while (total_sent < message_length) {
-        int sent = send(socket, message + total_sent, message_length - total_sent, 0);
-        if (sent <= 0) {
-            return -1; // Error occurred
-        }
-        total_sent += sent;
-    }
+	while (total_sent < message_length) {
+		int sent = send(socket, message + total_sent, message_length - total_sent, 0);
+		if (sent <= 0) {
+			return -1; // Error occurred
+		}
+		total_sent += sent;
+	}
 
-    return total_sent;
+	return total_sent;
 }
 
 int recv_line(int socket, char *buffer, size_t max_length) {
-    int position = 0;
-    char c;
+	int position = 0;
+	char c;
 
-    while(position < max_length - 1){
-        int received = recv(socket, &c, 1, 0);
+	while(position < max_length - 1){
+		int received = recv(socket, &c, 1, 0);
 
-        if(received <= 0){
-            return -1; // Error or connection closed
-        }
-        if(c == '\n'){
-            break; // End of line
-        }
-        buffer[position++] = c;
-    }
-    buffer[position] = '\0';
-    return position; // Return the number of characters read
+		if(received <= 0){
+			return -1; // Error or connection closed
+		}
+		if(c == '\n'){
+			break; // End of line
+		}
+		buffer[position++] = c;
+	}
+	buffer[position] = '\0';
+	return position; // Return the number of characters read
 }
 
 int createRoom(){
-    pthread_mutex_lock(&clients_mutex);
+	pthread_mutex_lock(&clients_mutex);
 
-    if(numRooms >= MAX_ROOMS){
-        pthread_mutex_unlock(&clients_mutex);
-        return -1; // Cannot create more rooms
-    }
+	if(numRooms >= MAX_ROOMS){
+		pthread_mutex_unlock(&clients_mutex);
+		return -1; // Cannot create more rooms
+	}
 
-    int room = numRooms;
-    client_count[room] = 0;
-    numRooms++;
-    pthread_mutex_unlock(&clients_mutex);
-    return room;
+	int room = numRooms;
+	client_count[room] = 0;
+	numRooms++;
+	pthread_mutex_unlock(&clients_mutex);
+	return room;
 }
 
-void broadcast(char *message, int sender_socket, int room)
+void dm(char *msg, const char *name, int sender_socket, int room) {
+	size_t mlen = strlen(msg);
+	char *message = NULL;
+	if (asprintf(&message, "%zu %s", mlen, msg) == -1)
+        return;
+	mlen = strlen(message);
+
+	pthread_mutex_lock(&clients_mutex);
+
+	for (int i = 0; i < client_count[room]; i++) {
+		if (clients[room][i].socket != sender_socket && strcmp(clients[room][i].name, name) == 0) {
+			send(clients[room][i].socket, message, mlen, 0);
+		}
+	}
+
+	pthread_mutex_unlock(&clients_mutex);
+	free(message);
+}
+
+void broadcast(char *msg, int sender_socket, int room)
 {
-    pthread_mutex_lock(&clients_mutex);
+	size_t mlen = strlen(msg);
+	char *message = NULL;
+	if (asprintf(&message, "%zu %s", mlen, msg) == -1)
+        return;
+	mlen = strlen(message);
 
-    for (int i = 0; i < client_count[room]; i++) {
-        if (clients[room][i].socket != sender_socket) {
-            send(clients[room][i].socket, message, strlen(message), 0);
-        }
-    }
+	pthread_mutex_lock(&clients_mutex);
 
-    pthread_mutex_unlock(&clients_mutex);
+	for (int i = 0; i < client_count[room]; i++) {
+		if (clients[room][i].socket != sender_socket) {
+			send(clients[room][i].socket, message, mlen, 0);
+		}
+	}
+
+	pthread_mutex_unlock(&clients_mutex);
+	free(message);
 }
 
 void printCLList()
 {
-    // Print the list of connected clients in each room
-    pthread_mutex_lock(&clients_mutex);
+	// Print the list of connected clients in each room
+	pthread_mutex_lock(&clients_mutex);
 
-    printf("\n===== Connected Clients =====\n");
+	printf("\n===== Connected Clients =====\n");
 
-    // Iterate through each room
-    for (int room = 0; room < numRooms; room++) {
+	// Iterate through each room
+	for (int room = 0; room < numRooms; room++) {
 
-        printf("Room: %d\n", room);
+		printf("Room: %d\n", room);
 
-        if (client_count[room] == 0) {
-            printf("No connected clients.\n");
-        }
+		if (client_count[room] == 0) {
+			printf("No connected clients.\n");
+		}
 
-        for (int cl = 0; cl < client_count[room]; cl++) {
+		for (int cl = 0; cl < client_count[room]; cl++) {
 
-            printf("[%s(%s)]\n",
-                clients[room][cl].name,
-                clients[room][cl].ip);
-        }
-    }
+			printf("[%s(%s)]\n",
+				clients[room][cl].name,
+				clients[room][cl].ip);
+		}
+	}
 
-    printf("==============================\n");
+	printf("==============================\n");
 
-    pthread_mutex_unlock(&clients_mutex);
+	pthread_mutex_unlock(&clients_mutex);
 }
 
 // Function to remove a client from the list of connected clients
 void remove_client(int socket, int room)
 {
-    pthread_mutex_lock(&clients_mutex);
+	pthread_mutex_lock(&clients_mutex);
 
-    for (int i = 0; i < client_count[room]; i++) {
+	for (int i = 0; i < client_count[room]; i++) {
 
-        if (clients[room][i].socket == socket) {
+		if (clients[room][i].socket == socket) {
 
-            for (int j = i; j < client_count[room] - 1; j++) {
-                clients[room][j] = clients[room][j + 1];
-            }
+			for (int j = i; j < client_count[room] - 1; j++) {
+				clients[room][j] = clients[room][j + 1];
+			}
 
-            client_count[room]--;
-            break;
-        }
-    }
+			client_count[room]--;
+			break;
+		}
+	}
 
-    pthread_mutex_unlock(&clients_mutex);
+	pthread_mutex_unlock(&clients_mutex);
 }
 
 // Function to handle room requests from clients
 int handle_room_request(int socket, int *selected_room)
 {
-    char request[128];
-    char response[4096];
+	char request[128];
+	char response[4096];
 
-    if (recv_line(socket, request, sizeof(request)) <= 0) {
-        return -1;
-    }
+	if (recv_line(socket, request, sizeof(request)) <= 0) {
+		return -1;
+	}
 
-    // Handle a NEW request immediately
-    if (strcmp(request, "NEW") == 0) {
-        int room = createRoom();
+	// Handle a NEW request immediately
+	if (strcmp(request, "NEW") == 0) {
+		int room = createRoom();
 
-        if (room == -1) {
-            send_all(socket, "ERROR: Cannot create new room\n");
-            return -1;
-        }
+		if (room == -1) {
+			send_all(socket, "ERROR: Cannot create new room\n");
+			return -1;
+		}
 
-        snprintf(response, sizeof(response), "OK %d\n", room);
+		snprintf(response, sizeof(response), "OK %d\n", room);
 
-        if (send_all(socket, response) <= 0) {
-            return -1;
-        }
+		if (send_all(socket, response) <= 0) {
+			return -1;
+		}
 
-        *selected_room = room;
+		*selected_room = room;
 
-        printf("Created new room: %d\n", room);
+		printf("Created new room: %d\n", room);
 
-        return 0;
-    }
+		return 0;
+	}
 
-    // If the user requested a list of rooms
-    // send the list and wait for another request
-    if (strcmp(request, "LIST") == 0) {
+	// If the user requested a list of rooms
+	// send the list and wait for another request
+	if (strcmp(request, "LIST") == 0) {
 
-        pthread_mutex_lock(&clients_mutex);
+		pthread_mutex_lock(&clients_mutex);
 
-        snprintf(response, sizeof(response), "ROOMS %d\n", numRooms);
+		snprintf(response, sizeof(response), "ROOMS %d\n", numRooms);
 
-        for (int room = 0; room < numRooms; room++) {
-            char room_info[32];
+		for (int room = 0; room < numRooms; room++) {
+			char room_info[32];
 
-            snprintf(room_info, sizeof(room_info), "%d %d\n", room, client_count[room]);
+			snprintf(room_info, sizeof(room_info), "%d %d\n", room, client_count[room]);
 
-            strncat(response, room_info, sizeof(response) - strlen(response) - 1);
-        }
+			strncat(response, room_info, sizeof(response) - strlen(response) - 1);
+		}
 
-        strncat(response, "\n", sizeof(response) - strlen(response) - 1);
+		strncat(response, "\n", sizeof(response) - strlen(response) - 1);
 
-        pthread_mutex_unlock(&clients_mutex);
+		pthread_mutex_unlock(&clients_mutex);
 
-        if (send_all(socket, response) <= 0) {
-            return -1;
-        }
+		if (send_all(socket, response) <= 0) {
+			return -1;
+		}
 
-        // Wait for the user's room selection
-        if (recv_line(socket, request, sizeof(request)) <= 0) {
-            return -1;
-        }
+		// Wait for the user's room selection
+		if (recv_line(socket, request, sizeof(request)) <= 0) {
+			return -1;
+		}
 
-        // NEW: User wants to create a room from the room list
-        if (strcmp(request, "NEW") == 0) {
+		// NEW: User wants to create a room from the room list
+		if (strcmp(request, "NEW") == 0) {
 
-            int room = createRoom();
+			int room = createRoom();
 
-            if (room == -1) {
-                send_all(socket, "ERROR: Cannot create new room\n");
-                return -1;
-            }
+			if (room == -1) {
+				send_all(socket, "ERROR: Cannot create new room\n");
+				return -1;
+			}
 
-            snprintf(response, sizeof(response), "OK %d\n", room);
+			snprintf(response, sizeof(response), "OK %d\n", room);
 
-            if (send_all(socket, response) <= 0) {
-                return -1;
-            }
+			if (send_all(socket, response) <= 0) {
+				return -1;
+			}
 
-            *selected_room = room;
+			*selected_room = room;
 
-            printf("Created new room: %d\n", room);
+			printf("Created new room: %d\n", room);
 
-            return 0;
-        }
-    }
+			return 0;
+		}
+	}
 
-    // Otherwise, the request should be JOIN
-    int room;
+	// Otherwise, the request should be JOIN
+	int room;
 
-    if (sscanf(request, "JOIN %d", &room) != 1) {
-        send_all(socket, "ERROR: Invalid JOIN command\n");
-        return -1;
-    }
+	if (sscanf(request, "JOIN %d", &room) != 1) {
+		send_all(socket, "ERROR: Invalid JOIN command\n");
+		return -1;
+	}
 
-    pthread_mutex_lock(&clients_mutex);
+	pthread_mutex_lock(&clients_mutex);
 
-    int room_exists = (room >= 0 && room < numRooms);
+	int room_exists = (room >= 0 && room < numRooms);
 
-    pthread_mutex_unlock(&clients_mutex);
+	pthread_mutex_unlock(&clients_mutex);
 
-    // If the room does not exist, send an error message to the client
-    if (!room_exists) {
-        send_all(socket, "ERROR: Room does not exist\n");
-        return -1;
-    }
+	// If the room does not exist, send an error message to the client
+	if (!room_exists) {
+		send_all(socket, "ERROR: Room does not exist\n");
+		return -1;
+	}
 
-    // Send confirmation to the client
-    snprintf(response, sizeof(response), "OK %d\n", room);
+	// Send confirmation to the client
+	snprintf(response, sizeof(response), "OK %d\n", room);
 
-    if (send_all(socket, response) <= 0) {
-        return -1;
-    }
+	if (send_all(socket, response) <= 0) {
+		return -1;
+	}
 
-    *selected_room = room;
+	*selected_room = room;
 
-    return 0;
+	return 0;
 }
 
 int recv_exact(int sock, void *buffer, size_t length)
 {
-    size_t total = 0;
+	size_t total = 0;
 
-    while (total < length) {
-        ssize_t n = recv(sock, (char *)buffer + total, length - total, 0);
+	while (total < length) {
+		ssize_t n = recv(sock, (char *)buffer + total, length - total, 0);
 
-        if (n <= 0)
-            return -1;
+		if (n <= 0)
+			return -1;
 
-        total += n;
-    }
+		total += n;
+	}
 
-    return 0;
+	return 0;
 }
 
 char *receive_message(int sock, size_t *message_size,
-                      const char *header, const char *footer)
+					  const char *header, const char *footer)
 {
-    char length_buffer[32];
-    size_t i = 0;
-    char c;
+	char length_buffer[32];
+	size_t i = 0;
+	char c;
 
-    while (i < sizeof(length_buffer) - 1) {
-        if (recv(sock, &c, 1, 0) <= 0)
-            return NULL;
+	while (i < sizeof(length_buffer) - 1) {
+		if (recv(sock, &c, 1, 0) <= 0)
+			return NULL;
 
-        if (c == ' ')
-            break;
+		if (c == ' ')
+			break;
 
-        if (c < '0' || c > '9')
-            return NULL;
+		if (c < '0' || c > '9')
+			return NULL;
 
-        length_buffer[i++] = c;
-    }
+		length_buffer[i++] = c;
+	}
 
-    if (i == 0 || i == sizeof(length_buffer) - 1)
-        return NULL;
+	if (i == 0 || i == sizeof(length_buffer) - 1)
+		return NULL;
 
-    length_buffer[i] = '\0';
+	length_buffer[i] = '\0';
 
-    char *end;
-    unsigned long long parsed_size = strtoull(length_buffer, &end, 10);
+	char *end;
+	unsigned long long parsed_size = strtoull(length_buffer, &end, 10);
 
-    if (*end || parsed_size == 0 || parsed_size > 10 * 1024 * 1024)
-        return NULL;
+	if (*end || parsed_size == 0 || parsed_size > 10 * 1024 * 1024)
+		return NULL;
 
-    size_t size = (size_t)parsed_size;
-    size_t header_len = header ? strlen(header) : 0;
-    size_t footer_len = footer ? strlen(footer) : 0;
+	size_t size = (size_t)parsed_size;
+	size_t header_len = header ? strlen(header) : 0;
+	size_t footer_len = footer ? strlen(footer) : 0;
 
-    char *message = malloc(header_len + size + footer_len + 1);
-    if (!message)
-        return NULL;
+	char *message = malloc(header_len + size + footer_len + 1);
+	if (!message)
+		return NULL;
 
-    if (header_len)
-        memcpy(message, header, header_len);
+	if (header_len)
+		memcpy(message, header, header_len);
 
-    if (recv_exact(sock, message + header_len, size) < 0) {
-        free(message);
-        return NULL;
-    }
+	if (recv_exact(sock, message + header_len, size) < 0) {
+		free(message);
+		return NULL;
+	}
 
-    if (footer_len)
-        memcpy(message + header_len + size, footer, footer_len);
+	if (footer_len)
+		memcpy(message + header_len + size, footer, footer_len);
 
-    message[header_len + size + footer_len] = '\0';
-    *message_size = header_len + size + footer_len;
+	message[header_len + size + footer_len] = '\0';
+	*message_size = header_len + size + footer_len;
 
-    return message;
+	return message;
 }
 
 // Thread function to handle communication with a client
 void* thread_main(void* args)
 {
-    pthread_detach(pthread_self());
+	pthread_detach(pthread_self());
 
-    ThreadArgs *thread_args = (ThreadArgs*) args;
+	ThreadArgs *thread_args = (ThreadArgs*) args;
 
-    int clisockfd = ((ThreadArgs*) args)->clisockfd;
-    struct in_addr ip = ((ThreadArgs*) args)->ip;
+	int clisockfd = ((ThreadArgs*) args)->clisockfd;
+	struct in_addr ip = ((ThreadArgs*) args)->ip;
 
-    free(args);
+	free(args);
 
-    char buffer[256];
-    char name[256];
+	char buffer[256];
+	char name[256];
 
-    int room = -1;
+	int room = -1;
 
-    // Handle room request from the client
-    if(handle_room_request(clisockfd, &room) < 0){
-        close(clisockfd);
-        return NULL;
-    }
+	// Handle room request from the client
+	if(handle_room_request(clisockfd, &room) < 0){
+		close(clisockfd);
+		return NULL;
+	}
 
-    // Receive the client's name
-    int nrcv = recv(clisockfd, name, sizeof(name) - 1, 0);
+	// Receive the client's name
+	int nrcv = recv(clisockfd, name, sizeof(name) - 1, 0);
 
-    if (nrcv <= 0) {
-        close(clisockfd);
-        return NULL;
-    }
+	if (nrcv <= 0) {
+		close(clisockfd);
+		return NULL;
+	}
 
-    name[nrcv] = '\0';
+	name[nrcv] = '\0';
 
-    pthread_mutex_lock(&clients_mutex);
+	pthread_mutex_lock(&clients_mutex);
 
-    if (client_count[room] >= MAX_CLIENTS) {
-        pthread_mutex_unlock(&clients_mutex);
-        send_all(clisockfd, "ERROR: Room is full\n");
-        close(clisockfd);
-        return NULL;
-    }
+	if (client_count[room] >= MAX_CLIENTS) {
+		pthread_mutex_unlock(&clients_mutex);
+		send_all(clisockfd, "ERROR: Room is full\n");
+		close(clisockfd);
+		return NULL;
+	}
 
-    // Position where the new client will be stored
-    int client_index = client_count[room];
+	// Position where the new client will be stored
+	int client_index = client_count[room];
 
-    clients[room][client_index].socket = clisockfd;
+	clients[room][client_index].socket = clisockfd;
 
-    strcpy(clients[room][client_index].name, name);
+	strcpy(clients[room][client_index].name, name);
 
-    inet_ntop(AF_INET, &ip,
-        clients[room][client_index].ip,
-        sizeof(clients[room][client_index].ip));
+	inet_ntop(AF_INET, &ip,
+		clients[room][client_index].ip,
+		sizeof(clients[room][client_index].ip));
 
-    // Generate a unique color
-    int red;
-    int green;
-    int blue;
+	// Generate a unique color
+	int red;
+	int green;
+	int blue;
 
-    // Ensure the generated color is unique within the room
-    int uniqueColor;
+	// Ensure the generated color is unique within the room
+	int uniqueColor;
 
-    do {
+	do {
 
-        red = rand() % 256;
-        green = rand() % 256;
-        blue = rand() % 256;
+		red = rand() % 256;
+		green = rand() % 256;
+		blue = rand() % 256;
 
-        uniqueColor = 1;
+		uniqueColor = 1;
 
-        // Check the colors of existing clients in this room
-        for (int cl = 0; cl < client_count[room]; cl++) {
+		// Check the colors of existing clients in this room
+		for (int cl = 0; cl < client_count[room]; cl++) {
 
-            if (clients[room][cl].red == red &&
-                clients[room][cl].green == green &&
-                clients[room][cl].blue == blue) {
+			if (clients[room][cl].red == red &&
+				clients[room][cl].green == green &&
+				clients[room][cl].blue == blue) {
 
-                uniqueColor = 0;
-                break;
-            }
-        }
+				uniqueColor = 0;
+				break;
+			}
+		}
 
-    } while (uniqueColor == 0);
+	} while (uniqueColor == 0);
 
-    // Store the assigned color
-    clients[room][client_index].red = red;
-    clients[room][client_index].green = green;
-    clients[room][client_index].blue = blue;
+	// Store the assigned color
+	clients[room][client_index].red = red;
+	clients[room][client_index].green = green;
+	clients[room][client_index].blue = blue;
 
-    client_count[room]++;
+	client_count[room]++;
 
-    pthread_mutex_unlock(&clients_mutex);
+	pthread_mutex_unlock(&clients_mutex);
 
-    printCLList();
+	printCLList();
 
-    char color[32];
+	char color[32];
 
-    snprintf(color, sizeof(color),
-        "\033[38;2;%d;%d;%dm",
-        red, green, blue);
+	snprintf(color, sizeof(color),
+		"\033[38;2;%d;%d;%dm",
+		red, green, blue);
 
-    char message[516];
+	char message[516];
 
-    snprintf(message, sizeof(message),
-        "%s%s(%s) has joined the chat.%s",
-        color, name, inet_ntoa(ip), RESETRGB);
+	snprintf(message, sizeof(message),
+		"%s%s(%s) has joined the chat.%s",
+		color, name, inet_ntoa(ip), RESETRGB);
 
-    broadcast(message, clisockfd, room);
+	broadcast(message, clisockfd, room);
 
-    while (1) {
+	while (1) {
 		size_t nrcv = 0;
 
 		char tmp[293];
 		snprintf(tmp, sizeof(tmp),
-            "%s[%s(%s)]: ",
-            color, name, inet_ntoa(ip));
+			"%s[%s(%s)]: ",
+			color, name, inet_ntoa(ip));
+
+		int headerLength = strlen(tmp);
 
 		char *msg = receive_message(clisockfd, &nrcv, tmp, RESETRGB);
 
-        if (nrcv <= 0)
-            break;
+		if (nrcv <= 0)
+			break;
 
-        broadcast(msg, clisockfd, room);
+		if (strncmp(msg + headerLength, "[DM] ", 5) == 0) {
+			char *toname = msg + headerLength + 5;
+
+			char *separator = strchr(toname, ' ');
+
+			*separator = '\0';
+
+			char *message = separator + 1;
+
+			char *outDM = NULL;
+
+			asprintf(&outDM, "%s[%s(%s)] has DM'd you: %s"RESETRGB, color, name, inet_ntoa(ip), message);
+			dm(outDM, toname, clisockfd, room);
+			free(outDM);
+		}
+		else {
+			broadcast(msg, clisockfd, room);
+		}
 		free(msg);
-    }
+	}
 
 
-    {
-        char message[516];
+	{
+		char message[516];
 
-        snprintf(message, sizeof(message),
-            "%s%s(%s) has left the chat.%s",
-            color, name, inet_ntoa(ip), RESETRGB);
+		snprintf(message, sizeof(message),
+			"%s%s(%s) has left the chat.%s",
+			color, name, inet_ntoa(ip), RESETRGB);
 
-        broadcast(message, clisockfd, room);
-    }
+		broadcast(message, clisockfd, room);
+	}
 
-    remove_client(clisockfd, room);
+	remove_client(clisockfd, room);
 
-    printCLList();
+	printCLList();
 
-    close(clisockfd);
+	close(clisockfd);
 
-    return NULL;
+	return NULL;
 }
 
 
 int main(int argc, char *argv[])
 {
-    srand(time(NULL));
+	srand(time(NULL));
 
-    memset(client_count, 0, sizeof(int) * MAX_ROOMS);
+	memset(client_count, 0, sizeof(int) * MAX_ROOMS);
 
-    int firstRoom = createRoom();
+	int firstRoom = createRoom();
 
-    if (firstRoom == -1) {
-        error("ERROR creating the first room");
-    }
+	if (firstRoom == -1) {
+		error("ERROR creating the first room");
+	}
 
-    printf("Created room %d\n", firstRoom);
+	printf("Created room %d\n", firstRoom);
 
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (sockfd < 0)
-        error("ERROR opening socket");
+	if (sockfd < 0)
+		error("ERROR opening socket");
 
-    struct sockaddr_in serv_addr;
-    socklen_t slen = sizeof(serv_addr);
+	struct sockaddr_in serv_addr;
+	socklen_t slen = sizeof(serv_addr);
 
-    memset((char*) &serv_addr, 0, sizeof(serv_addr));
+	memset((char*) &serv_addr, 0, sizeof(serv_addr));
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(PORT_NUM);
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = INADDR_ANY;
+	serv_addr.sin_port = htons(PORT_NUM);
 
-    int status = bind(sockfd,
-        (struct sockaddr*) &serv_addr,
-        slen);
+	int status = bind(sockfd,
+		(struct sockaddr*) &serv_addr,
+		slen);
 
-    if (status < 0)
-        error("ERROR on binding");
+	if (status < 0)
+		error("ERROR on binding");
 
-    listen(sockfd, 5);
+	listen(sockfd, 5);
 
-    while (1) {
+	while (1) {
 
-        struct sockaddr_in cli_addr;
-        socklen_t clen = sizeof(cli_addr);
+		struct sockaddr_in cli_addr;
+		socklen_t clen = sizeof(cli_addr);
 
-        int newsockfd = accept(sockfd,
-            (struct sockaddr*) &cli_addr,
-            &clen);
+		int newsockfd = accept(sockfd,
+			(struct sockaddr*) &cli_addr,
+			&clen);
 
-        if (newsockfd < 0)
-            error("ERROR on accept");
+		if (newsockfd < 0)
+			error("ERROR on accept");
 
-        // Prepare ThreadArgs structure to pass client information
-        ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
+		// Prepare ThreadArgs structure to pass client information
+		ThreadArgs* args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
 
-        if (args == NULL)
-            error("ERROR creating thread argument");
+		if (args == NULL)
+			error("ERROR creating thread argument");
 
-        args->clisockfd = newsockfd;
-        args->ip = cli_addr.sin_addr;
+		args->clisockfd = newsockfd;
+		args->ip = cli_addr.sin_addr;
 
-        pthread_t tid;
+		pthread_t tid;
 
-        int thread_status = pthread_create(&tid, NULL, thread_main, (void*) args);
-        if (thread_status != 0){
-            free(args);
-            close(newsockfd);
-            fprintf(stderr, "ERROR creating a new thread: %s\n", strerror(thread_status));
-        }
-    }
+		int thread_status = pthread_create(&tid, NULL, thread_main, (void*) args);
+		if (thread_status != 0){
+			free(args);
+			close(newsockfd);
+			fprintf(stderr, "ERROR creating a new thread: %s\n", strerror(thread_status));
+		}
+	}
 
-    return 0;
+	return 0;
 }

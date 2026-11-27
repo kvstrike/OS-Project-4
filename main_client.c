@@ -243,22 +243,80 @@ int request_room(int sockfd, int argc, char **argv)
     return confirmed_room;
 }
 
+char *receive_message(int sockfd, size_t *message_size)
+{
+    char size_buffer[32];
+    size_t i = 0;
+    char c;
+
+    // Read size prefix
+    while (i < sizeof(size_buffer) - 1) {
+        ssize_t n = recv(sockfd, &c, 1, 0);
+
+        if (n <= 0)
+            return NULL;
+
+        if (c == ' ')
+            break;
+
+        if (c < '0' || c > '9')
+            return NULL;
+
+        size_buffer[i++] = c;
+    }
+
+    if (i == 0 || i == sizeof(size_buffer) - 1)
+        return NULL;
+
+    size_buffer[i] = '\0';
+
+    char *end;
+    unsigned long long parsed_size = strtoull(size_buffer, &end, 10);
+
+    if (*end != '\0' || parsed_size > 100ULL * 1024 * 1024)
+        return NULL;
+
+    size_t size = (size_t)parsed_size;
+
+    char *buffer = malloc(size + 1);
+    if (!buffer)
+        return NULL;
+
+    size_t received = 0;
+
+    // Read exact payload size
+    while (received < size) {
+        ssize_t n = recv(
+            sockfd,
+            buffer + received,
+            size - received,
+            0
+        );
+
+        if (n <= 0) {
+            free(buffer);
+            return NULL;
+        }
+
+        received += (size_t)n;
+    }
+
+    buffer[size] = '\0';
+    *message_size = size;
+
+    return buffer;
+}
+
 void* receive_messages(void* arg)
 {
     int sockfd = *(int*)arg;
-    char buffer[256];
 
     while (1) {
-        memset(buffer, 0, sizeof(buffer));
+        size_t message_size;
+		char *buffer = receive_message(sockfd, &message_size);
 
-        int n = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
-
-        if (n <= 0) {
-            printf("\nDisconnected from server.\n");
-            break;
-        }
-
-        buffer[n] = '\0';
+		if (!buffer)
+    		break;
 
         printf("\r%s\033[K\n", buffer);
         printf("Please enter the message: ");
